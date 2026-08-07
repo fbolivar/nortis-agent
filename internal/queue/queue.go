@@ -54,7 +54,10 @@ func Open(path string) (*Queue, error) {
 	// WAL permite leer mientras se escribe: el sincronizador puede drenar sin
 	// bloquear al recolector.
 	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+		// El error del cierre se descarta explicitamente: ya estamos en el
+		// camino de error y lo que importa devolver es la causa original, no un
+		// fallo secundario al limpiar.
+		_ = db.Close()
 		return nil, fmt.Errorf("creando el esquema de la cola: %w", err)
 	}
 

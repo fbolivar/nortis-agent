@@ -1,0 +1,64 @@
+version: "2"
+
+run:
+  # El agente es solo para Windows: sin esto, el linter analiza con las etiquetas
+  # de compilacion del runner y no ve nada de DPAPI, registro ni servicio — que
+  # es justamente el codigo con mas riesgo.
+  build-tags:
+    - windows
+
+linters:
+  enable:
+    - errcheck      # errores ignorados: el fallo mas comun y mas caro
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose     # respuestas HTTP sin cerrar: fuga de conexiones en un proceso que corre meses
+    - errorlint     # comparaciones de error que se rompen al envolver
+    - gosec         # problemas de seguridad; critico en un producto de seguridad
+
+  settings:
+    gosec:
+      excludes:
+        # G115 (conversiones enteras con posible desbordamiento) dispara en las
+        # llamadas a la API de Windows, donde los tipos vienen impuestos por la
+        # firma nativa y la conversion es correcta por construccion.
+        - G115
+
+    errcheck:
+      # Se ignoran SOLO los cierres diferidos: en `defer x.Close()` no hay nada
+      # que hacer con el error —la operacion util ya termino— y comprobarlos
+      # obligaria a envolver cada uno en un closure que no aporta nada. El resto
+      # de errores se sigue exigiendo, que es donde estan los fallos de verdad.
+      exclude-functions:
+        - (io.Closer).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Tx).Rollback
+        - (*github.com/fbolivar/nortis-agent/internal/queue.Queue).Close
+        - (golang.org/x/sys/windows/registry.Key).Close
+
+  exclusions:
+    rules:
+      # En las pruebas se ignoran errores a proposito para no ahogar el caso que
+      # se esta verificando entre comprobaciones irrelevantes.
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+
+      # G103 (uso de `unsafe`) es inherente a llamar a la API de Win32: DPAPI
+      # solo se alcanza pasando punteros a estructuras nativas. El codigo esta
+      # acotado a un archivo pequeño, revisado, y copia los datos antes de
+      # liberar la memoria que reserva Windows. Se excluye AQUI y solo aqui —
+      # desactivarlo globalmente ocultaria un `unsafe` en cualquier otro sitio.
+      - path: internal/dpapi/
+        text: "G103"
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt

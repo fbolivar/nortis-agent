@@ -180,8 +180,8 @@ func (c *Client) doOnce(ctx context.Context, path string, payload []byte, out an
 		return fmt.Errorf("leyendo la respuesta: %w", err)
 	}
 
-	switch {
-	case resp.StatusCode == http.StatusOK:
+	switch resp.StatusCode {
+	case http.StatusOK:
 		if out == nil {
 			return nil
 		}
@@ -190,11 +190,11 @@ func (c *Client) doOnce(ctx context.Context, path string, payload []byte, out an
 		}
 		return nil
 
-	case resp.StatusCode == http.StatusUnauthorized:
+	case http.StatusUnauthorized:
 		return ErrUnauthorized
-	case resp.StatusCode == http.StatusTooManyRequests:
+	case http.StatusTooManyRequests:
 		return ErrRateLimited
-	case resp.StatusCode == http.StatusBadRequest:
+	case http.StatusBadRequest:
 		return fmt.Errorf("%w: %s", ErrInvalidRequest, apiMessage(body))
 	default:
 		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, apiMessage(body))

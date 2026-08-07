@@ -67,13 +67,16 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.6.2
 
   auditoria:
     name: Vulnerabilidades conocidas
-    runs-on: ubuntu-latest
+    # windows-latest, igual que el resto. En Linux TODOS los archivos del agente
+    # quedan excluidos por //go:build windows, el paquete machineid se queda sin
+    # ficheros y govulncheck ni siquiera puede cargar el modulo.
+    runs-on: windows-latest
     timeout-minutes: 10
 
     steps:
@@ -86,9 +89,6 @@ jobs:
       # govulncheck solo reporta vulnerabilidades en codigo REALMENTE alcanzable,
       # no en cualquier dependencia del grafo. Eso hace que sus alertas se
       # atiendan en vez de aprenderse a ignorar.
-      #
-      # Corre en Ubuntu porque analiza el modulo, no el binario de Windows, y el
-      # runner de Linux es mas barato.
       - name: govulncheck
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
