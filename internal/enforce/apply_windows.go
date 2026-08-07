@@ -187,11 +187,13 @@ func (a *Aplicador) escribirUSBStor(valor uint32) bool {
 }
 
 func (a *Aplicador) escribirWriteProtect(valor uint32, estado *Estado) bool {
-	if !estado.WriteProtectExistia {
-		if v, ok := leerDword(registry.LOCAL_MACHINE, claveDirectiva, "WriteProtect"); ok {
-			estado.WriteProtectExistia = true
-			estado.WriteProtectOriginal = v
-		}
+	// El valor previo se anota UNA sola vez, igual que USBSTOR\Start. La marca de
+	// "ya se leyo" es propia y no se deduce de que el valor existiera: si no
+	// existia y se dedujera de ahi, la siguiente pasada leeria el valor que
+	// acabamos de escribir nosotros y lo tomaria por el original del cliente.
+	if !estado.WriteProtectLeido {
+		v, ok := leerDword(registry.LOCAL_MACHINE, claveDirectiva, "WriteProtect")
+		AnotarWriteProtect(estado, v, ok)
 	}
 	if err := escribirDword(registry.LOCAL_MACHINE, claveDirectiva, "WriteProtect", valor); err != nil {
 		a.log.Error().Err(err).Msg("no se pudo aplicar el modo solo lectura de USB")
@@ -292,6 +294,21 @@ func rutaHosts() string {
 func (a *Aplicador) Revertir() {
 	estado := CargarEstado(a.dir)
 	if !estado.Aplicado {
+		// Sin estado guardado no se puede restaurar el registro: no se sabe que
+		// habia antes, y adivinar es peor que no tocar. Pero el bloque del archivo
+		// hosts lleva nuestros marcadores, asi que ese si se puede quitar sin
+		// riesgo — y es mejor quitarlo que dejar dominios cortados en un equipo
+		// del que ya nadie se hace cargo.
+		//
+		// Se avisa en vez de salir callando: "no habia nada que revertir" y "no se
+		// como estaba el equipo" son cosas distintas, y confundirlas es lo que hace
+		// que alguien de por bueno un equipo que sigue bloqueado.
+		if a.limpiarHosts() {
+			a.log.Warn().Msg("no hay estado guardado: se quito el bloque del archivo hosts, pero las claves de registro hay que revisarlas a mano")
+			a.vaciarCacheDNS()
+			return
+		}
+		a.log.Info().Msg("no hay nada que revertir")
 		return
 	}
 
@@ -311,17 +328,7 @@ func (a *Aplicador) Revertir() {
 		_ = borrarValor(registry.LOCAL_MACHINE, claveDirectiva, "WriteProtect")
 	}
 
-	// Hosts: se quita solo nuestro bloque.
-	ruta := rutaHosts()
-	if actual, err := os.ReadFile(ruta); err == nil {
-		limpio := QuitarBloqueNortis(string(actual))
-		if limpio != string(actual) {
-			tmp := ruta + ".nortis.tmp"
-			if os.WriteFile(tmp, []byte(limpio), 0o644) == nil {
-				_ = os.Rename(tmp, ruta)
-			}
-		}
-	}
+	a.limpiarHosts()
 
 	// DoH: si el cliente ya tenia una politica propia se restaura tal cual; solo
 	// se borra el valor si lo creamos nosotros.
@@ -336,6 +343,31 @@ func (a *Aplicador) Revertir() {
 	a.vaciarCacheDNS()
 	_ = os.Remove(rutaEstado(a.dir))
 	a.log.Info().Msg("controles revertidos; el equipo queda como estaba antes de instalar el agente")
+}
+
+// limpiarHosts quita SOLO el bloque delimitado por nuestros marcadores y
+// devuelve si habia algo que quitar. Nada fuera de esos marcadores se toca: el
+// archivo hosts es del cliente y puede tener entradas suyas de las que depende
+// su red.
+func (a *Aplicador) limpiarHosts() bool {
+	ruta := rutaHosts()
+	actual, err := os.ReadFile(ruta)
+	if err != nil {
+		return false
+	}
+	limpio := QuitarBloqueNortis(string(actual))
+	if limpio == string(actual) {
+		return false
+	}
+	tmp := ruta + ".nortis.tmp"
+	if os.WriteFile(tmp, []byte(limpio), 0o644) != nil {
+		return false
+	}
+	if os.Rename(tmp, ruta) != nil {
+		_ = os.Remove(tmp)
+		return false
+	}
+	return true
 }
 
 /* -------------------------------------------------------------- Registro --- */

@@ -149,3 +149,39 @@ func TestDominiosSeNormalizanYNoSeRepiten(t *testing.T) {
 		}
 	}
 }
+
+// La politica se reimpone cada pocos minutos. Si la captura del valor previo se
+// repitiera, la segunda pasada leeria el valor que escribimos nosotros y lo
+// anotaria como el original del cliente: la reversion restauraria el bloqueo y
+// diria que el equipo volvio a su estado.
+//
+// Paso en un equipo real. El USB quedo en solo lectura y hubo que borrar la
+// clave a mano.
+func TestElValorPrevioSeAnotaUnaSolaVez(t *testing.T) {
+	t.Run("no existia antes: la reversion debe borrarlo", func(t *testing.T) {
+		e := nuevoEstado()
+
+		// Primera pasada: el cliente no tenia WriteProtect.
+		AnotarWriteProtect(e, 0, false)
+		// Pasadas siguientes: ya esta puesto nuestro 1. No debe anotarse.
+		AnotarWriteProtect(e, 1, true)
+		AnotarWriteProtect(e, 1, true)
+
+		if e.WriteProtectExistia {
+			t.Fatal("se tomo nuestro propio valor por el original del cliente: " +
+				"la reversion dejaria el USB en solo lectura para siempre")
+		}
+	})
+
+	t.Run("el cliente ya lo tenia: la reversion debe restaurarlo", func(t *testing.T) {
+		e := nuevoEstado()
+
+		AnotarWriteProtect(e, 1, true)
+		AnotarWriteProtect(e, 0, true)
+
+		if !e.WriteProtectExistia || e.WriteProtectOriginal != 1 {
+			t.Fatalf("se perdio la directiva propia del cliente: existia=%v valor=%d",
+				e.WriteProtectExistia, e.WriteProtectOriginal)
+		}
+	})
+}
