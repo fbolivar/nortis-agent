@@ -17,6 +17,7 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/agentcfg"
 	"github.com/fbolivar/nortis-agent/internal/collector"
 	"github.com/fbolivar/nortis-agent/internal/contract"
+	"github.com/fbolivar/nortis-agent/internal/enforce"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
 )
@@ -42,13 +43,22 @@ type Program struct {
 	agent *syncer.Agent
 	log   zerolog.Logger
 
+	// aplicador impone la politica en el sistema (registro, archivo hosts).
+	// Es lo unico del agente que MODIFICA el equipo en vez de observarlo.
+	aplicador *enforce.Aplicador
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	cfg    agentcfg.Config
 }
 
 func NewProgram(cfg agentcfg.Config, agent *syncer.Agent, log zerolog.Logger) *Program {
-	return &Program{agent: agent, log: log, cfg: cfg}
+	return &Program{
+		agent:     agent,
+		log:       log,
+		cfg:       cfg,
+		aplicador: enforce.NuevoAplicador(log, agentcfg.Dir()),
+	}
 }
 
 // Start debe RETORNAR RAPIDO. El gestor de servicios de Windows espera una
@@ -235,4 +245,30 @@ func (p *Program) policyOnce(ctx context.Context) {
 			p.log.Debug().Err(err).Msg("no se pudo actualizar la politica; sigue vigente la anterior")
 		}
 	}
+
+	// La politica se IMPONE despues de refrescarla, y tambien cuando el refresco
+	// fallo: en ese caso se reaplica la ultima conocida. Es deliberado — un
+	// equipo sin red no puede quedarse sin los controles que ya tenia solo
+	// porque no pudo confirmar que siguen vigentes.
+	p.imponer()
+}
+
+// imponer aplica la politica vigente al sistema.
+func (p *Program) imponer() {
+	res := p.aplicador.Aplicar(p.agent.Policy())
+
+	ev := p.log.Info()
+	if !res.Cubierto() {
+		// Si algo no se pudo imponer, el resumen sube a error. Un equipo que la
+		// consola dara por protegido y no lo esta no puede quedar anotado en una
+		// linea informativa entre otras cincuenta.
+		ev = p.log.Error()
+	}
+
+	ev.Str("usb", res.USB).
+		Str("usb_solicitado", res.USBSolicitado).
+		Int("dominios_bloqueados", res.Dominios).
+		Int("solo_alerta", len(res.SoloAlerta)).
+		Bool("cubierto", res.Cubierto()).
+		Msg("politica impuesta en el equipo")
 }

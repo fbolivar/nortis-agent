@@ -26,6 +26,7 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/agentcfg"
 	"github.com/fbolivar/nortis-agent/internal/clipwatch"
 	"github.com/fbolivar/nortis-agent/internal/contract"
+	"github.com/fbolivar/nortis-agent/internal/enforce"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/queue"
 	svc "github.com/fbolivar/nortis-agent/internal/service"
@@ -256,6 +257,20 @@ func cmdControl(action string) error {
 
 	if err := service.Control(s, action); err != nil {
 		return fmt.Errorf("%s: %w (¿tiene privilegios de administrador?)", action, err)
+	}
+
+	// LA REVERSION VA SOLO EN LA DESINSTALACION, nunca en `stop`.
+	//
+	// Es deliberado: si detener el servicio levantara los bloqueos, cualquiera
+	// con permiso para parar un servicio desbloquearia el USB en dos clics y el
+	// control no valdria nada. El precio es que un agente que muera de forma
+	// anomala deja el equipo protegido hasta que alguien lo desinstale — que es
+	// el lado correcto en el que equivocarse para un producto de seguridad.
+	//
+	// Va DESPUES de detener el servicio para que no vuelva a aplicar la politica
+	// entre la reversion y su parada.
+	if action == "uninstall" {
+		enforce.NuevoAplicador(newLogger(true), agentcfg.Dir()).Revertir()
 	}
 
 	fmt.Printf("Servicio: %s completado.\n", action)
