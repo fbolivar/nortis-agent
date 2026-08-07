@@ -56,6 +56,8 @@ func main() {
 		// Verbo interno: lo lanza el servicio DENTRO de la sesion del usuario.
 		// No es para uso manual y por eso no aparece en la ayuda.
 		err = cmdClipboardWatch(os.Args[2:])
+	case "revert":
+		err = cmdRevert()
 	case "status":
 		err = cmdStatus()
 	case "selftest":
@@ -79,7 +81,8 @@ func usage() {
   enroll -key <API_KEY> [-url <URL>]   Registra este equipo en la consola
   install                              Instala el servicio de Windows
   start | stop | restart               Controla el servicio
-  uninstall                            Desinstala el servicio
+  uninstall                            Desinstala el servicio y revierte los controles
+  revert                               Revierte los controles sin tocar el servicio
   run                                  Ejecuta en primer plano (diagnostico)
   status                               Estado local, sin tocar la red
   selftest                             Valida el camino cola -> consola
@@ -256,9 +259,7 @@ func cmdControl(action string) error {
 		return err
 	}
 
-	if err := service.Control(s, action); err != nil {
-		return fmt.Errorf("%s: %w (¿tiene privilegios de administrador?)", action, err)
-	}
+	errServicio := service.Control(s, action)
 
 	// LA REVERSION VA SOLO EN LA DESINSTALACION, nunca en `stop`.
 	//
@@ -270,11 +271,38 @@ func cmdControl(action string) error {
 	//
 	// Va DESPUES de detener el servicio para que no vuelva a aplicar la politica
 	// entre la reversion y su parada.
+	//
+	// Y SE REVIERTE AUNQUE LA DESINSTALACION FALLE. La primera version devolvia
+	// el error de service.Control antes de llegar aqui, y bastaba con que el
+	// servicio no estuviera instalado —porque se probo el agente en primer plano,
+	// o porque alguien ya lo quito a mano— para que `uninstall` se negara a hacer
+	// NADA y el equipo se quedara con el USB en solo lectura y el archivo hosts
+	// intervenido para siempre, sin ninguna via dentro del producto para
+	// deshacerlo. Es justo el escenario contra el que se escribio este paquete:
+	// un agente que se desinstala dejando el equipo bloqueado no es un producto
+	// de seguridad, es una incidencia de soporte. El error del servicio se
+	// reporta, pero no puede impedir que el equipo vuelva a su estado.
 	if action == "uninstall" {
 		enforce.NuevoAplicador(newLogger(true), agentcfg.Dir()).Revertir()
 	}
 
+	if errServicio != nil {
+		return fmt.Errorf("%s: %w (¿tiene privilegios de administrador?)", action, errServicio)
+	}
+
 	fmt.Printf("Servicio: %s completado.\n", action)
+	return nil
+}
+
+// cmdRevert deshace los controles sin tocar el servicio.
+//
+// `uninstall` mezcla dos cosas que no siempre van juntas: quitar el servicio y
+// devolver el equipo a su estado. Hace falta poder hacer lo segundo solo — al
+// diagnosticar, tras una prueba en primer plano, o cuando el servicio ya no esta
+// pero los controles si.
+func cmdRevert() error {
+	enforce.NuevoAplicador(newLogger(true), agentcfg.Dir()).Revertir()
+	fmt.Println("Controles revertidos: el equipo queda como estaba antes de aplicar la politica.")
 	return nil
 }
 
