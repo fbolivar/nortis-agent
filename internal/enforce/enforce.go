@@ -64,15 +64,46 @@ type Estado struct {
 
 	// USBStorStart es el valor original de USBSTOR\Start. -1 = no se leyo.
 	USBStorStart int `json:"usbstor_start"`
-	// WriteProtectExistia indica si la clave StorageDevicePolicies ya estaba,
-	// para no borrar en la reversion algo que puso el cliente.
-	WriteProtectExistia bool `json:"write_protect_existia"`
+	// WriteProtectLeido dice si YA se anoto el valor previo. Es una marca
+	// distinta de WriteProtectExistia, y esa distincion es el punto entero:
+	//
+	// la politica se reimpone cada pocos minutos, asi que la captura tiene que
+	// ocurrir UNA sola vez. Al principio las dos ideas se guardaban en el mismo
+	// booleano —"ya lo lei" y "el cliente lo tenia"— y como en la primera pasada
+	// el valor no existia, el booleano quedaba en false; en la segunda pasada se
+	// volvia a leer y se leia NUESTRO propio 1, que quedaba anotado como el
+	// original del cliente. La reversion lo restauraba con toda fidelidad: el
+	// USB se quedaba en solo lectura para siempre y el mensaje decia que el
+	// equipo habia vuelto a su estado.
+	//
+	// Paso en un equipo real y hubo que borrar el valor a mano. Por eso son dos
+	// campos: uno responde "¿ya miré?" y el otro "¿había algo?".
+	WriteProtectLeido bool `json:"write_protect_leido"`
+	// WriteProtectExistia indica si el valor ya estaba puesto por el cliente,
+	// para no borrar en la reversion algo que no pusimos nosotros.
+	WriteProtectExistia  bool   `json:"write_protect_existia"`
 	WriteProtectOriginal uint32 `json:"write_protect_original"`
 
 	// DohExistia dice, por navegador, si la politica de DNS-over-HTTPS ya
 	// estaba definida antes. Si lo estaba NO se borra: se restaura su valor.
 	DohExistia  map[string]bool   `json:"doh_existia"`
 	DohOriginal map[string]string `json:"doh_original"`
+}
+
+// AnotarWriteProtect registra el valor previo de WriteProtect la PRIMERA vez que
+// se llama y no hace nada en las siguientes.
+//
+// Esta separado del codigo de registro —que solo existe en Windows y necesita
+// privilegios— para que la regla de "una sola captura" se pueda probar. Es el
+// tipo de logica cuyo fallo no se ve al aplicar la politica sino semanas
+// despues, al intentar deshacerla, y para entonces el equipo ya esta bloqueado.
+func AnotarWriteProtect(e *Estado, valor uint32, existe bool) {
+	if e.WriteProtectLeido {
+		return
+	}
+	e.WriteProtectLeido = true
+	e.WriteProtectExistia = existe
+	e.WriteProtectOriginal = valor
 }
 
 func nuevoEstado() *Estado {
