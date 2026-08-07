@@ -5,6 +5,11 @@ on:
     branches: [main]
   push:
     branches: [main]
+    # Las etiquetas v* son las que producen un instalador publicable. Que el
+    # disparador sea el mismo workflow no es casualidad: si el MSI se armara en
+    # otro sitio, podria publicarse un instalador cuyo binario nunca paso por
+    # los tests.
+    tags: ['v*']
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,6 +60,100 @@ jobs:
           name: nortis-agent-windows-amd64
           path: dist/nortis-agent.exe
           retention-days: 14
+
+  instalador:
+    name: MSI
+    # Depende de la verificacion: un instalador que se arma en paralelo a los
+    # tests puede publicarse antes de que estos fallen.
+    needs: verificacion
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      # Necesario para Azure Trusted Signing con OIDC: se cambia un token de
+      # GitHub por uno de Azure y la clave privada nunca existe fuera del HSM.
+      # Un .pfx en los secretos del repositorio seria una clave de firma al
+      # alcance de cualquiera con permiso de escritura sobre los workflows.
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      # El runner ya trae .NET; solo falta la herramienta wix. La version se fija
+      # a proposito: WiX genera identificadores y tablas ligeramente distintos
+      # entre versiones menores, y un instalador que cambia solo porque el runner
+      # se actualizo es un instalador que nadie puede reproducir.
+      - name: Instalar WiX
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Instalar extensiones de WiX
+        run: |
+          wix extension add -g WixToolset.Util.wixext/5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+
+      # En una etiqueta v1.2.3 la version sale de la etiqueta; en cualquier otra
+      # rama se marca 0.0.0 para que un MSI de prueba no pueda confundirse con
+      # una version publicada ni actualizar por encima de una.
+      - name: Determinar version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $v = $env:GITHUB_REF -replace '^refs/tags/v',''
+          } else {
+            $v = '0.0.0'
+          }
+          "version=$v" | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "version = $v"
+
+      # SIN FIRMA fuera de las etiquetas. Es deliberado: cada firma con un
+      # certificado EV queda registrada y contribuye a la reputacion del
+      # editor. Firmar cada commit de una rama gastaria esa reputacion en
+      # binarios que nadie va a instalar.
+      - name: Construir el MSI (sin firmar)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        shell: pwsh
+        run: ./packaging/build.ps1 -Version ${{ steps.version.outputs.version }}
+
+      - name: Construir y firmar el MSI
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_CODE_SIGNING_DLIB: ${{ github.workspace }}/dlib/Azure.CodeSigning.Dlib.dll
+        run: |
+          dotnet tool install --global Azure.CodeSigning.Client --version 1.0.*
+          ./packaging/build.ps1 -Version ${{ steps.version.outputs.version }} -ClaveAzure
+
+      # UNA ETIQUETA NO PUEDE PUBLICAR UN MSI SIN FIRMAR. Si el paso de firma se
+      # cayo —secreto ausente, certificado caducado— el trabajo tiene que
+      # romperse aqui y no subir el artefacto: un instalador sin firma que llega
+      # a un cliente lo bloquea SmartScreen y lo pone en cuarentena el antivirus,
+      # y para entonces ya esta en su correo.
+      - name: Exigir firma en las etiquetas
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem dist -Filter *.msi | Select-Object -First 1
+          $firma = Get-AuthenticodeSignature $msi.FullName
+          Write-Host "estado de la firma: $($firma.Status)"
+          if ($firma.Status -ne 'Valid') {
+            throw "el MSI no tiene una firma valida ($($firma.Status)): no se publica"
+          }
+
+      - name: Publicar el instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: NortisAgent-msi-${{ steps.version.outputs.version }}
+          path: dist/*.msi
+          retention-days: 90
 
   lint:
     name: golangci-lint

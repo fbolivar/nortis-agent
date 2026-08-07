@@ -1,0 +1,22 @@
+{
+  "_comentario": [
+    "Descriptor para Azure Trusted Signing. NO contiene secretos: la",
+    "autenticacion va por AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET",
+    "en el entorno, o por OIDC en CI. La clave privada nunca sale del HSM de",
+    "Azure, asi que ni el portatil del desarrollador ni el runner de GitHub",
+    "llegan a tenerla.",
+    "",
+    "CertificateProfileName debe corresponder a un perfil de tipo",
+    "'Public Trust'. El tipo 'Test' firma igual y verifica en la maquina que lo",
+    "creo, pero su cadena no esta en la raiz de confianza de Windows: en el",
+    "equipo del cliente aparece como no firmado, que es justo lo que se quiere",
+    "evitar.",
+    "",
+    "Rellenar Endpoint, CodeSigningAccountName y CertificateProfileName tras",
+    "dar de alta la cuenta. Ver README.md en esta carpeta."
+  ],
+  "Endpoint": "https://eus.codesigning.azure.net/",
+  "CodeSigningAccountName": "REEMPLAZAR-cuenta-de-firma",
+  "CertificateProfileName": "REEMPLAZAR-perfil-public-trust",
+  "CorrelationId": "nortis-agent"
+}
