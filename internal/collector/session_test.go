@@ -77,6 +77,9 @@ func TestInactividadSoloEnLaTransicion(t *testing.T) {
 	if ev[0].Payload["idle_seconds"] != int(UmbralInactividad.Seconds()) {
 		t.Errorf("idle_seconds incorrecto: %v", ev[0].Payload["idle_seconds"])
 	}
+	if ev[0].Payload["reason"] != "idle" {
+		t.Errorf("motivo incorrecto: %v", ev[0].Payload["reason"])
+	}
 
 	// Sigue inactiva: no se repite. Aqui esta el error que generaria miles de
 	// eventos en una noche.
@@ -153,5 +156,47 @@ func TestSesionesIndependientes(t *testing.T) {
 	}
 	if ev[0].Payload["user"] != "ana" {
 		t.Errorf("la inactividad se atribuyo a %v", ev[0].Payload["user"])
+	}
+}
+
+// El caso que descubrio la maquina real: en una sesion de consola Windows deja
+// LastInputTime en cero, asi que Inactivo vale siempre cero y el umbral no se
+// alcanza jamas. La ausencia tiene que salir del bloqueo de pantalla o un PC de
+// escritorio —el caso normal en la oficina de un cliente— nunca la reportaria.
+func TestPantallaBloqueadaEsAusenciaSinUmbral(t *testing.T) {
+	m := nuevaMaquinaSesiones()
+	m.observar([]sesion{{ID: 1, Usuario: "ana", Estado: wtsActive}}, t0)
+
+	ev := m.observar([]sesion{{ID: 1, Usuario: "ana", Estado: wtsActive, Bloqueada: true}}, t0)
+	if !iguales(tipos(ev), contract.EventIdleStart) {
+		t.Fatalf("bloquear la pantalla debia emitir idle_start, se obtuvo %v", tipos(ev))
+	}
+	if ev[0].Payload["reason"] != "locked" {
+		t.Errorf("motivo incorrecto: %v", ev[0].Payload["reason"])
+	}
+	// Sin dato de teclado no se inventa uno: el campo simplemente no va.
+	if _, hay := ev[0].Payload["idle_seconds"]; hay {
+		t.Errorf("no habia medida de inactividad y aun asi se reporto: %v", ev[0].Payload)
+	}
+
+	// Mientras siga bloqueada no se repite.
+	if ev := m.observar([]sesion{{ID: 1, Usuario: "ana", Bloqueada: true}}, t0); len(ev) != 0 {
+		t.Fatalf("se repitio idle_start con la pantalla bloqueada: %v", tipos(ev))
+	}
+
+	if ev := m.observar([]sesion{{ID: 1, Usuario: "ana", Estado: wtsActive}}, t0); !iguales(tipos(ev), contract.EventIdleEnd) {
+		t.Fatalf("desbloquear debia emitir idle_end, se obtuvo %v", tipos(ev))
+	}
+}
+
+// Desbloquear no puede cerrar la ausencia si la sesion remota sigue sin uso: son
+// dos señales de lo mismo y la que quede activa manda.
+func TestDesbloquearConInactividadRemotaSigueAusente(t *testing.T) {
+	m := nuevaMaquinaSesiones()
+	m.observar([]sesion{{ID: 1, Usuario: "ana", Estado: wtsActive}}, t0)
+	m.observar([]sesion{{ID: 1, Usuario: "ana", Bloqueada: true, Inactivo: time.Hour}}, t0)
+
+	if ev := m.observar([]sesion{{ID: 1, Usuario: "ana", Inactivo: time.Hour}}, t0); len(ev) != 0 {
+		t.Fatalf("se dio por presente a alguien que lleva una hora sin tocar nada: %v", tipos(ev))
 	}
 }
