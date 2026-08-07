@@ -19,9 +19,17 @@ const (
 
 // sesion describe el estado observable de una sesion interactiva.
 type sesion struct {
-	ID        uint32
-	Usuario   string
-	Estado    wtsConnectState
+	ID      uint32
+	Usuario string
+	Estado  wtsConnectState
+	// Bloqueada es la pantalla bloqueada. Es la señal PRINCIPAL de ausencia:
+	// Windows no reporta el ultimo uso de teclado o raton de las sesiones de
+	// consola a un servicio, asi que en un PC de escritorio esto es lo unico
+	// observable — y ademas es lo que de verdad importa, porque un equipo
+	// bloqueado es un equipo desatendido.
+	Bloqueada bool
+	// Inactivo es el tiempo sin teclado ni raton. Solo llega con valor en
+	// sesiones remotas; en consola es cero siempre.
 	Inactivo  time.Duration
 	LogonTime time.Time
 }
@@ -31,6 +39,10 @@ type sesion struct {
 // Cinco minutos: por debajo, cualquier pausa para leer un documento generaria un
 // par idle_start/idle_end y el reporte de uso se llenaria de ruido. Por encima,
 // se dejarian de ver ausencias reales de media hora.
+//
+// Solo aplica a las sesiones remotas, que son las unicas de las que Windows
+// reporta el ultimo uso del teclado. En consola manda el bloqueo de pantalla,
+// que no necesita umbral: bloquear es un acto deliberado del usuario.
 const UmbralInactividad = 5 * time.Minute
 
 // estadoSesion es lo que el recolector recuerda de una sesion entre sondeos.
@@ -65,7 +77,7 @@ func (m *maquinaSesiones) observar(actual []sesion, ahora time.Time) []contract.
 		visto[s.ID] = true
 		anterior, existia := m.previo[s.ID]
 
-		inactiva := s.Inactivo >= UmbralInactividad
+		inactiva := s.Bloqueada || s.Inactivo >= UmbralInactividad
 		desconectada := s.Estado == wtsDisconnected
 
 		switch {
@@ -104,12 +116,18 @@ func (m *maquinaSesiones) observar(actual []sesion, ahora time.Time) []contract.
 			if inactiva {
 				tipo = contract.EventIdleStart
 			}
+			// Se dice POR QUE se considero ausente. Sin esto, el panel no podria
+			// distinguir "bloqueo la pantalla y se fue" de "lleva cinco minutos
+			// sin tocar nada", que para un reporte de uso no son lo mismo.
+			payload := map[string]any{
+				"user":   s.Usuario,
+				"reason": motivo(s),
+			}
+			if s.Inactivo > 0 {
+				payload["idle_seconds"] = int(s.Inactivo.Seconds())
+			}
 			eventos = append(eventos, contract.Event{
-				Type: tipo, OccurredAt: ahora,
-				Payload: map[string]any{
-					"user":         s.Usuario,
-					"idle_seconds": int(s.Inactivo.Seconds()),
-				},
+				Type: tipo, OccurredAt: ahora, Payload: payload,
 			})
 		}
 
@@ -133,6 +151,14 @@ func (m *maquinaSesiones) observar(actual []sesion, ahora time.Time) []contract.
 	}
 
 	return eventos
+}
+
+// motivo explica de donde salio la ausencia.
+func motivo(s sesion) string {
+	if s.Bloqueada {
+		return "locked"
+	}
+	return "idle"
 }
 
 func tipoSesion(estado wtsConnectState) string {
