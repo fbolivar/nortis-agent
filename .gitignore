@@ -17,3 +17,14 @@
 # Cobertura y perfiles
 *.out
 *.test
+
+# Extensiones de WiX que descarga `wix extension add`. Se resuelven desde
+# NuGet.config con la version fijada, asi que versionarlas solo añadiria varios
+# megabytes de binarios que nadie revisa.
+/.wix/
+
+# Certificados de firma. Nunca, bajo ningun concepto, en el repositorio: quien
+# tenga la clave privada puede firmar cualquier cosa como BC FABRIC SAS.
+*.pfx
+*.p12
+*.snk

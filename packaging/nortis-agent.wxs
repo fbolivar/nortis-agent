@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  INSTALADOR DEL AGENTE NORTIS
+  ============================================================================
+
+  Un MSI y no un .exe porque el cliente objetivo es una PYME con dominio: el
+  administrador quiere desplegarlo por GPO o por Intune, y ambos esperan un MSI
+  con instalacion silenciosa y desinstalacion limpia. Un instalador propio
+  obligaria a envolverlo igual.
+
+  LO QUE ESTE PAQUETE TIENE QUE HACER BIEN, por orden de importancia:
+
+  1. DESINSTALAR DEJANDO EL EQUIPO COMO ESTABA. El agente pone el USB en solo
+     lectura, escribe en el archivo hosts y desactiva DNS-over-HTTPS. Si el MSI
+     borra el ejecutable sin llamar antes a `revert`, el equipo queda bloqueado
+     y ya no existe la herramienta que sabia deshacerlo. Ya ocurrio una vez por
+     un fallo del propio agente; que no vuelva a ocurrir por el instalador.
+
+  2. NO REVERTIR AL ACTUALIZAR. Una actualizacion es tecnicamente una
+     desinstalacion seguida de una instalacion. Si se revirtiera, cada version
+     nueva dejaria los equipos desprotegidos durante unos segundos —y del todo
+     si la instalacion siguiente falla.
+
+  3. NO REVERTIR AL DETENER EL SERVICIO. Va en el agente, no aqui, pero el
+     paquete no debe introducirlo por la puerta de atras.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+
+  <Package
+      Name="Nortis Agent"
+      Manufacturer="BC FABRIC SAS"
+      Version="$(var.Version)"
+      UpgradeCode="0FF113B5-6C1E-4F0B-9058-E6979B63AD87"
+      Scope="perMachine"
+      Compressed="yes">
+
+    <!--
+      AllowSameVersionUpgrades permite reinstalar la misma version encima, que es
+      lo que hace un administrador cuando reaplica la GPO. Sin esto el despliegue
+      falla con un error que no dice nada util.
+
+      Schedule=afterInstallExecute: los archivos nuevos se ponen ANTES de quitar
+      los viejos, asi la ventana en la que no hay ejecutable en disco es minima.
+    -->
+    <MajorUpgrade
+        AllowSameVersionUpgrades="yes"
+        Schedule="afterInstallExecute"
+        DowngradeErrorMessage="Ya hay una version mas reciente de Nortis Agent instalada." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="NortisIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="NortisIcon" />
+    <Property Id="ARPHELPLINK" Value="https://nortis.co/soporte" />
+    <!-- ARPNOMODIFY no se declara aqui: WixUI_Minimal ya lo pone. Y esta bien
+         que asi sea: no hay nada configurable desde el Panel de control, toda la
+         configuracion baja de la consola. -->
+
+
+    <Launch
+        Condition="Installed OR (VersionNT &gt;= 603)"
+        Message="Nortis Agent requiere Windows 8.1 o superior." />
+
+    <!--
+      ENROLAMIENTO
+      ========================================================================
+      El token llega por linea de comandos:
+
+        msiexec /i NortisAgent.msi /qn TOKEN=xxxxx CONSOLA=https://app.nortis.co
+
+      Secure="yes" es necesario para que la propiedad sobreviva al paso al
+      contexto elevado en una instalacion silenciosa por GPO. Va en mayusculas
+      por lo mismo: las propiedades en minusculas son privadas y no cruzan.
+
+      Hidden="yes" mantiene el token fuera del registro de instalacion. Un log
+      de MSI acaba en tickets de soporte y correos; un token de enrolamiento que
+      viaje ahi es una credencial filtrada.
+    -->
+    <Property Id="TOKEN" Secure="yes" Hidden="yes" />
+    <Property Id="CONSOLA" Secure="yes" Value="https://app.nortis.co" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CarpetaNortis" Name="Nortis">
+        <Directory Id="INSTALLFOLDER" Name="Agent" />
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="Componentes" Directory="INSTALLFOLDER">
+      <Component Id="Ejecutable" Guid="B0B03532-EBD9-499F-87B7-9C4FD1E53CC1">
+        <File Id="NortisAgentExe" Name="nortis-agent.exe" Source="$(var.AgentExe)" KeyPath="yes" />
+
+        <!--
+          El servicio corre como LocalSystem porque tiene que escribir en
+          HKLM\SYSTEM y en %SystemRoot%\System32\drivers\etc\hosts. No hay una
+          cuenta con menos privilegios que pueda hacer ambas cosas.
+
+          Start=auto y ErrorControl=normal: si el servicio no arranca, el equipo
+          arranca igual. Un agente de seguridad que impide encender el portatil
+          es peor problema que el que resuelve.
+        -->
+        <ServiceInstall
+            Id="ServicioNortis"
+            Name="NortisAgent"
+            DisplayName="Nortis Agent"
+            Description="Supervision de endpoint, prevencion de fuga de informacion y cifrado gestionado."
+            Type="ownProcess"
+            Start="auto"
+            ErrorControl="normal"
+            Account="LocalSystem"
+            Arguments="service"
+            Vital="yes">
+          <!--
+            Reinicio automatico ante caida. Sin esto, un panico en un recolector
+            deja el equipo sin vigilancia hasta el siguiente arranque, y la
+            consola lo seguiria mostrando como cubierto hasta que venciera el
+            plazo de latido.
+
+            NO se pide arranque retrasado. Es tentador —mejora el tiempo de
+            encendido— pero abre una ventana de un par de minutos en cada inicio
+            en la que el USB no esta restringido y los dominios no estan
+            bloqueados. Justo despues de encender es cuando alguien que quiere
+            sacar informacion tiene el equipo para el solo.
+          -->
+          <util:ServiceConfig
+              FirstFailureActionType="restart"
+              SecondFailureActionType="restart"
+              ThirdFailureActionType="restart"
+              RestartServiceDelayInSeconds="60"
+              ResetPeriodInDays="1" />
+        </ServiceInstall>
+
+        <ServiceControl
+            Id="ControlServicioNortis"
+            Name="NortisAgent"
+            Start="install"
+            Stop="both"
+            Remove="uninstall"
+            Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Principal" Title="Nortis Agent" Level="1">
+      <ComponentGroupRef Id="Componentes" />
+    </Feature>
+
+    <!--
+      ENROLAR: se ejecuta tras copiar los archivos y antes de arrancar el
+      servicio, para que el agente encuentre ya su credencial en disco y no
+      gaste el primer ciclo fallando la autenticacion.
+
+      Impersonate="no" porque escribe en %ProgramData%. Return="ignore" porque
+      un token caducado NO debe abortar la instalacion: el binario queda puesto
+      y el administrador puede enrolar despues sin volver a desplegar.
+    -->
+    <CustomAction Id="EstablecerEnrolar" Property="Enrolar"
+                  Value="&quot;[INSTALLFOLDER]nortis-agent.exe&quot; enroll --token &quot;[TOKEN]&quot; --console &quot;[CONSOLA]&quot;" />
+    <CustomAction Id="Enrolar" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <!--
+      REVERTIR: la accion mas importante del paquete.
+      ========================================================================
+      Se programa DESPUES de StopServices —para que el agente no vuelva a
+      imponer la politica mientras se deshace— y ANTES de RemoveFiles, porque
+      quien sabe revertir es el ejecutable que RemoveFiles esta a punto de
+      borrar.
+
+      La condicion tiene dos partes y las dos hacen falta:
+        REMOVE="ALL"              solo en una desinstalacion completa, no al
+                                  quitar una caracteristica suelta.
+        NOT UPGRADINGPRODUCTCODE  una actualizacion desinstala la version vieja;
+                                  sin esto, cada actualizacion desprotegeria el
+                                  equipo.
+    -->
+    <CustomAction Id="EstablecerRevertir" Property="Revertir"
+                  Value="&quot;[INSTALLFOLDER]nortis-agent.exe&quot; revert" />
+    <CustomAction Id="Revertir" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <Custom Action="EstablecerEnrolar" Before="Enrolar" Condition="NOT Installed AND TOKEN" />
+      <Custom Action="Enrolar" Before="StartServices" Condition="NOT Installed AND TOKEN" />
+
+      <Custom Action="EstablecerRevertir" Before="Revertir"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+      <Custom Action="Revertir" After="StopServices"
+              Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenciaPath)" />
+  </Package>
+</Wix>

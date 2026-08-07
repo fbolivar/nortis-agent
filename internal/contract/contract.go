@@ -15,7 +15,17 @@ import "time"
 
 // AgentVersion es la version que el agente reporta y con la que se compara
 // contra minimum_supported_version de la consola.
-const AgentVersion = "1.0.0"
+//
+// Es una VARIABLE, no una constante, para que el empaquetado la fije con
+// -ldflags -X a la misma version que lleva el MSI. Siendo constante, todo
+// binario reportaba el mismo numero pasara lo que pasara: la consola veria la
+// misma version en un parque con tres versiones distintas instaladas, y el aviso
+// de agente desactualizado no se disparaba nunca.
+//
+// El valor de aqui es solo el de una compilacion de desarrollo. 0.0.0 y no un
+// numero que parezca real: si algun dia llega a produccion sin sellar, tiene que
+// cantar en el panel en vez de pasar por una version legitima.
+var AgentVersion = "0.0.0-dev"
 
 // PolicySchemaVersion es la version del contrato de politica que este agente
 // SABE aplicar.
