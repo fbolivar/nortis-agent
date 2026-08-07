@@ -59,6 +59,16 @@ linters:
         linters:
           - gosec
 
+      # Mismo caso, misma acotacion: enumerar sesiones (WTS) y procesos
+      # (Toolhelp) son llamadas a Win32 que reciben punteros a estructuras
+      # nativas. El `unsafe` vive solo en los archivos _windows.go del paquete;
+      # la logica que decide QUE se reporta es codigo puro, sin punteros, y es la
+      # que esta cubierta por pruebas.
+      - path: internal/collector/
+        text: "G103"
+        linters:
+          - gosec
+
 formatters:
   enable:
     - gofmt

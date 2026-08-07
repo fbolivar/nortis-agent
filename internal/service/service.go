@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/fbolivar/nortis-agent/internal/agentcfg"
+	"github.com/fbolivar/nortis-agent/internal/collector"
 	"github.com/fbolivar/nortis-agent/internal/contract"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
@@ -73,7 +74,51 @@ func (p *Program) Start(s service.Service) error {
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
 
+	p.arrancarRecolectores(ctx)
+
 	return nil
+}
+
+// arrancarRecolectores lanza cada recolector en su propia goroutine.
+//
+// Sin endpoint enrolado no se arranca ninguno: los eventos se acumularian en la
+// cola sin destino al que enviarlos, y al enrolarse despues se subiria de golpe
+// telemetria de horas anteriores con fecha de antes de que el equipo existiera
+// en la consola.
+func (p *Program) arrancarRecolectores(ctx context.Context) {
+	if p.agent.EndpointID() == "" {
+		p.log.Warn().Msg("equipo sin enrolar; no se arrancan los recolectores")
+		return
+	}
+
+	// Emit escribe en la cola local, que es una operacion de disco y nunca de
+	// red: el recolector no puede quedarse esperando a la consola.
+	emit := func(e contract.Event) { p.agent.Enqueue(e) }
+
+	for _, c := range collector.Default(p.log) {
+		p.wg.Add(1)
+		go p.correrRecolector(ctx, c, emit)
+	}
+}
+
+// correrRecolector aisla un recolector del resto.
+//
+// El recover es lo que hace real el requisito de que un fallo del agente nunca
+// bloquee al usuario: un panico leyendo procesos no puede tumbar el vigilante de
+// sesiones, ni los ciclos de sincronizacion, ni el servicio. El recolector caido
+// no se reinicia a proposito — reintentar en bucle algo que panica llenaria el
+// disco de logs; el resto del agente sigue funcionando y el fallo queda escrito.
+func (p *Program) correrRecolector(ctx context.Context, c collector.Collector, emit collector.Emit) {
+	defer p.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			p.log.Error().Interface("panico", r).Str("recolector", c.Name()).
+				Msg("recolector detenido tras un panico; el resto del agente sigue")
+		}
+	}()
+
+	p.log.Info().Str("recolector", c.Name()).Msg("recolector iniciado")
+	c.Run(ctx, emit)
 }
 
 // Stop tambien debe retornar rapido: si el servicio no confirma la parada,
