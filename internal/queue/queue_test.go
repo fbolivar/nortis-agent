@@ -194,3 +194,75 @@ func TestElEstadoSobreviveAlReinicio(t *testing.T) {
 		t.Errorf("se perdio la telemetria pendiente: quedan %d", n)
 	}
 }
+
+// El identificador de deduplicacion tiene que ser ESTABLE entre lecturas.
+//
+// Es el invariante que sostiene la idempotencia de la ingesta: un envio que
+// falla se reintenta con el mismo identificador, y por eso la consola reconoce
+// el reenvio. Si se regenerara en cada Dequeue, cada reintento entraria como un
+// evento nuevo y la deduplicacion del servidor no serviria absolutamente de
+// nada — que es justo el fallo que veniamos a cerrar.
+func TestIdentificadorDeDeduplicacionSobreviveAlReintento(t *testing.T) {
+	q := abrir(t)
+
+	if err := q.Enqueue(evento(`C:\informe.docx`)); err != nil {
+		t.Fatalf("encolando: %v", err)
+	}
+
+	primera, err := q.Dequeue(10)
+	if err != nil {
+		t.Fatalf("primera lectura: %v", err)
+	}
+	if len(primera) != 1 {
+		t.Fatalf("se esperaba 1 evento, hay %d", len(primera))
+	}
+	if primera[0].Event.ClientEventID == "" {
+		t.Fatal("el evento salio sin identificador de deduplicacion")
+	}
+
+	// Simula un envio fallido: no se confirma nada y se vuelve a leer.
+	if _, err := q.Fail([]int64{primera[0].ID}, 5); err != nil {
+		t.Fatalf("registrando el fallo: %v", err)
+	}
+
+	segunda, err := q.Dequeue(10)
+	if err != nil {
+		t.Fatalf("segunda lectura: %v", err)
+	}
+	if len(segunda) != 1 {
+		t.Fatalf("el evento deberia seguir en cola, hay %d", len(segunda))
+	}
+
+	if segunda[0].Event.ClientEventID != primera[0].Event.ClientEventID {
+		t.Fatalf("el identificador cambio entre reintentos: %q -> %q",
+			primera[0].Event.ClientEventID, segunda[0].Event.ClientEventID)
+	}
+}
+
+// Dos eventos distintos no pueden compartir identificador: si lo hicieran, la
+// consola descartaria el segundo creyendo que es un reenvio del primero.
+func TestCadaEventoRecibeSuPropioIdentificador(t *testing.T) {
+	q := abrir(t)
+
+	for i := 0; i < 5; i++ {
+		if err := q.Enqueue(evento(`C:\a.txt`)); err != nil {
+			t.Fatalf("encolando: %v", err)
+		}
+	}
+
+	pendientes, err := q.Dequeue(10)
+	if err != nil {
+		t.Fatalf("leyendo: %v", err)
+	}
+
+	vistos := make(map[string]bool, len(pendientes))
+	for _, p := range pendientes {
+		if p.Event.ClientEventID == "" {
+			t.Fatal("evento sin identificador")
+		}
+		if vistos[p.Event.ClientEventID] {
+			t.Fatalf("identificador repetido: %s", p.Event.ClientEventID)
+		}
+		vistos[p.Event.ClientEventID] = true
+	}
+}

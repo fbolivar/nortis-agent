@@ -61,9 +61,23 @@ const (
 // correo ni lo que el usuario copio al portapapeles. Nortis prueba QUE ocurrio
 // un movimiento de informacion, no lo reproduce.
 type Event struct {
-	Type       EventType      `json:"event_type"`
-	OccurredAt time.Time      `json:"occurred_at"`
-	Payload    map[string]any `json:"payload,omitempty"`
+	Type       EventType `json:"event_type"`
+	OccurredAt time.Time `json:"occurred_at"`
+
+	// ClientEventID es lo que hace idempotente la ingesta.
+	//
+	// Se genera UNA vez, al entrar el evento en la cola, y se conserva intacto
+	// en cada reintento. Esa permanencia ES el mecanismo: la consola mantiene un
+	// indice unico sobre (endpoint_id, client_event_id, occurred_at) y descarta
+	// lo que ya recibio, contandolo como aceptado.
+	//
+	// Regenerarlo al reenviar anularia la deduplicacion por completo y
+	// devolveria el problema original: un lote que el servidor confirma y cuya
+	// respuesta se pierde se insertaria dos veces. Con portatiles y conectividad
+	// intermitente ese es el caso normal, no el raro.
+	ClientEventID string `json:"client_event_id"`
+
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 /* ------------------------------------------------------------ Peticiones --- */
@@ -80,6 +94,20 @@ type EnrollResponse struct {
 	EndpointID     string `json:"endpoint_id"`
 	ProfileID      string `json:"profile_id"`
 	OrganizationID string `json:"organization_id"`
+
+	// AgentCredential es la credencial PROPIA de este equipo (nrt_ep_…). Viaja
+	// en claro una sola vez, aqui: en la consola solo queda su hash.
+	//
+	// A partir de este momento es la unica credencial que sirve para ingerir,
+	// latir y pedir politica. La clave de la organizacion queda reducida a lo
+	// que deberia haber sido siempre — un pase de un solo uso para el alta— y el
+	// agente la borra del disco en cuanto termina de enrolarse.
+	//
+	// El motivo no es cosmetico: antes la MISMA clave vivia en cada portatil de
+	// la flota, y quien extrajera la de un solo equipo podia falsear telemetria
+	// de cualquier otro. En un producto que sirve de evidencia, eso invalidaba
+	// el producto entero.
+	AgentCredential string `json:"agent_credential"`
 }
 
 type IngestRequest struct {
@@ -96,7 +124,14 @@ type IngestRequest struct {
 type IngestResponse struct {
 	Accepted int `json:"accepted"`
 	Rejected int `json:"rejected"`
-	Details  []struct {
+
+	// Duplicates va INCLUIDO en Accepted; se informa aparte solo para
+	// diagnostico. Un valor alto y sostenido significa que este agente no esta
+	// purgando su cola tras confirmar un lote — es decir, que reenvia lo mismo
+	// una y otra vez. Sin este dato ese fallo es invisible desde ambos lados.
+	Duplicates int `json:"duplicates"`
+
+	Details []struct {
 		Index  int    `json:"index"`
 		Reason string `json:"reason"`
 	} `json:"details,omitempty"`

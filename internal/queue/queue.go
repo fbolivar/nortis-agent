@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite" // driver SQLite en Go puro, sin cgo
 
 	"github.com/fbolivar/nortis-agent/internal/contract"
@@ -61,7 +62,53 @@ func Open(path string) (*Queue, error) {
 		return nil, fmt.Errorf("creando el esquema de la cola: %w", err)
 	}
 
+	if err := migrate(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	return &Queue{db: db}, nil
+}
+
+// migrate aplica los cambios de esquema sobre colas ya existentes.
+//
+// `create table if not exists` no toca una tabla que ya esta creada, asi que una
+// columna nueva no llega nunca a un agente ya instalado. Y la cola NO se puede
+// recrear vacia: contiene telemetria todavia no entregada, que es justo lo que
+// esta cola existe para no perder.
+func migrate(db *sql.DB) error {
+	rows, err := db.Query(`pragma table_info(events)`)
+	if err != nil {
+		return fmt.Errorf("inspeccionando el esquema de la cola: %w", err)
+	}
+	defer rows.Close()
+
+	hasClientEventID := false
+	for rows.Next() {
+		var (
+			cid        int
+			name, typ  string
+			notNull    int
+			defaultVal sql.NullString
+			pk         int
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultVal, &pk); err != nil {
+			return err
+		}
+		if name == "client_event_id" {
+			hasClientEventID = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	if !hasClientEventID {
+		if _, err := db.Exec(`alter table events add column client_event_id text not null default ''`); err != nil {
+			return fmt.Errorf("añadiendo client_event_id a la cola: %w", err)
+		}
+	}
+	return nil
 }
 
 func (q *Queue) Close() error { return q.db.Close() }
@@ -71,6 +118,10 @@ create table if not exists events (
   id          integer primary key autoincrement,
   event_type  text    not null,
   occurred_at text    not null,          -- RFC3339 en UTC
+  -- Se genera al encolar y NO cambia nunca. Es lo que permite a la consola
+  -- reconocer un reenvio: si se regenerara en cada intento, la deduplicacion
+  -- del servidor no serviria de nada.
+  client_event_id text not null default '',
   payload     text    not null,          -- JSON del payload
   attempts    integer not null default 0,
   created_at  text    not null default (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
@@ -93,9 +144,22 @@ func (q *Queue) Enqueue(e contract.Event) error {
 		return fmt.Errorf("serializando el payload: %w", err)
 	}
 
+	// El identificador se asigna AQUI, al persistir, y no en el sincronizador.
+	// Puesto en el envio se regeneraria en cada reintento y la deduplicacion del
+	// servidor no valdria para nada: hacerlo al encolar es lo que garantiza que
+	// el mismo evento lleve siempre el mismo identificador, aunque el equipo se
+	// reinicie entre el primer intento y el siguiente.
+	//
+	// Se respeta el que traiga el evento si ya viene puesto, para que un
+	// recolector pueda derivarlo de algo estable si algun dia le conviene.
+	id := e.ClientEventID
+	if id == "" {
+		id = uuid.NewString()
+	}
+
 	if _, err := q.db.Exec(
-		`insert into events (event_type, occurred_at, payload) values (?, ?, ?)`,
-		string(e.Type), e.OccurredAt.UTC().Format(time.RFC3339), string(payload),
+		`insert into events (event_type, occurred_at, client_event_id, payload) values (?, ?, ?, ?)`,
+		string(e.Type), e.OccurredAt.UTC().Format(time.RFC3339), id, string(payload),
 	); err != nil {
 		return fmt.Errorf("encolando: %w", err)
 	}
@@ -127,7 +191,7 @@ func (q *Queue) trim() error {
 // para siempre — justo el escenario que la cola existe para evitar.
 func (q *Queue) Dequeue(limit int) ([]Pending, error) {
 	rows, err := q.db.Query(
-		`select id, event_type, occurred_at, payload from events order by id asc limit ?`,
+		`select id, event_type, occurred_at, client_event_id, payload from events order by id asc limit ?`,
 		limit,
 	)
 	if err != nil {
@@ -138,10 +202,10 @@ func (q *Queue) Dequeue(limit int) ([]Pending, error) {
 	var out []Pending
 	for rows.Next() {
 		var (
-			id                        int64
-			eventType, occurred, body string
+			id                                 int64
+			eventType, occurred, clientID, body string
 		)
-		if err := rows.Scan(&id, &eventType, &occurred, &body); err != nil {
+		if err := rows.Scan(&id, &eventType, &occurred, &clientID, &body); err != nil {
 			return nil, err
 		}
 
@@ -159,9 +223,22 @@ func (q *Queue) Dequeue(limit int) ([]Pending, error) {
 			continue
 		}
 
+		// Las filas encoladas por una version anterior del agente no llevan
+		// identificador. Se les asigna uno al salir en vez de descartarlas: son
+		// telemetria real y no hay motivo para perderla. No se persiste porque
+		// esas filas se borran en cuanto la consola las confirme.
+		if clientID == "" {
+			clientID = uuid.NewString()
+		}
+
 		out = append(out, Pending{
-			ID:    id,
-			Event: contract.Event{Type: contract.EventType(eventType), OccurredAt: at, Payload: payload},
+			ID: id,
+			Event: contract.Event{
+				Type:          contract.EventType(eventType),
+				OccurredAt:    at,
+				ClientEventID: clientID,
+				Payload:       payload,
+			},
 		})
 	}
 

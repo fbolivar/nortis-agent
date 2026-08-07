@@ -79,10 +79,18 @@ func Dir() string {
 	return filepath.Join(".", "nortis-agent-data")
 }
 
-func ConfigPath() string     { return filepath.Join(Dir(), "config.json") }
+func ConfigPath() string { return filepath.Join(Dir(), "config.json") }
+
+// CredentialPath guarda la clave de la ORGANIZACION (nrt_live_…). Vive solo
+// entre la instalacion y el primer enrolamiento correcto: despues se borra.
 func CredentialPath() string { return filepath.Join(Dir(), "credential") }
-func QueuePath() string      { return filepath.Join(Dir(), "queue.db") }
-func LogPath() string        { return filepath.Join(Dir(), "agent.log") }
+
+// EndpointCredentialPath guarda la credencial de ESTE equipo (nrt_ep_…), con la
+// que se firma todo lo posterior al alta. Es la que perdura.
+func EndpointCredentialPath() string { return filepath.Join(Dir(), "endpoint.cred") }
+
+func QueuePath() string { return filepath.Join(Dir(), "queue.db") }
+func LogPath() string   { return filepath.Join(Dir(), "agent.log") }
 
 // EnsureDir crea el directorio de datos si no existe.
 func EnsureDir() error {

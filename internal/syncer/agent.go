@@ -99,12 +99,35 @@ func (a *Agent) Restore() error {
 	return nil
 }
 
-// Enroll registra el equipo y guarda su identidad.
-func (a *Agent) Enroll(ctx context.Context, req contract.EnrollRequest) error {
+// Enroll registra el equipo, guarda su identidad y CUSTODIA la credencial propia
+// que devuelve la consola.
+//
+// `saveCredential` se recibe como parametro en vez de llamar a agentcfg
+// directamente: asi este paquete no depende del almacenamiento concreto —que es
+// DPAPI y por tanto solo existe en Windows— y las pruebas pueden ejercitar el
+// alta sin tocar el disco.
+//
+// El ORDEN importa. La credencial se persiste ANTES de dar el alta por buena: si
+// se guardara despues y el proceso muriera en medio, el equipo quedaria
+// registrado en la consola pero sin forma de hablar con ella, y la unica salida
+// seria volver a enrolarlo.
+func (a *Agent) Enroll(ctx context.Context, req contract.EnrollRequest, saveCredential func(string) error) error {
 	res, err := a.client.Enroll(ctx, req)
 	if err != nil {
 		return err
 	}
+
+	// La consola siempre la devuelve. Si falta, este agente esta hablando con
+	// una version anterior de la API: seguir adelante dejaria un agente que se
+	// cree enrolado y no puede enviar nada, que es peor que fallar aqui.
+	if res.AgentCredential == "" {
+		return errors.New("la consola no devolvio la credencial del equipo; probablemente esta desactualizada")
+	}
+
+	if err := saveCredential(res.AgentCredential); err != nil {
+		return err
+	}
+	a.client.SetEndpointCredential(res.AgentCredential)
 
 	a.mu.Lock()
 	a.endpointID = res.EndpointID
@@ -168,6 +191,18 @@ func (a *Agent) Flush(ctx context.Context) (int, error) {
 				Int("aceptados", res.Accepted).
 				Int("rechazados", res.Rejected).
 				Msg("la consola descarto parte del lote")
+		}
+
+		// Duplicados: la consola ya tenia estos eventos y los conto como
+		// aceptados. Que aparezcan es NORMAL —significa que un envio anterior si
+		// llego y la respuesta se perdio, exactamente el caso que la
+		// deduplicacion existe para cubrir—. Que aparezcan SIEMPRE no lo es:
+		// indica que esta cola no se esta purgando tras confirmar, y sin este
+		// aviso ese fallo no se ve desde ningun lado.
+		if res.Duplicates > 0 {
+			a.log.Info().
+				Int("duplicados", res.Duplicates).
+				Msg("la consola ya tenia parte del lote; un envio anterior si habia llegado")
 		}
 
 		if err := a.q.Ack(ids); err != nil {
