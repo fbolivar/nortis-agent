@@ -95,7 +95,10 @@ func (p *Program) arrancarRecolectores(ctx context.Context) {
 	// red: el recolector no puede quedarse esperando a la consola.
 	emit := func(e contract.Event) { p.agent.Enqueue(e) }
 
-	for _, c := range collector.Default(p.log) {
+	// La politica se pasa como funcion, no como valor: el administrador la edita
+	// en la consola y el agente la recarga en caliente, asi que un recolector que
+	// la copiara al arrancar seguiria aplicando la de hace tres horas.
+	for _, c := range collector.Default(p.log, p.agent.Policy) {
 		p.wg.Add(1)
 		go p.correrRecolector(ctx, c, emit)
 	}
