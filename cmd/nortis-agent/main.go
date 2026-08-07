@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"runtime"
 	"time"
 
 	"github.com/kardianos/service"
@@ -22,6 +24,7 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 
 	"github.com/fbolivar/nortis-agent/internal/agentcfg"
+	"github.com/fbolivar/nortis-agent/internal/clipwatch"
 	"github.com/fbolivar/nortis-agent/internal/contract"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/queue"
@@ -47,6 +50,10 @@ func main() {
 		// Verbo interno: es con el que el gestor de servicios de Windows
 		// arranca el binario.
 		err = cmdRun(false)
+	case "clipboard-watch":
+		// Verbo interno: lo lanza el servicio DENTRO de la sesion del usuario.
+		// No es para uso manual y por eso no aparece en la ayuda.
+		err = cmdClipboardWatch()
 	case "status":
 		err = cmdStatus()
 	case "selftest":
@@ -417,4 +424,26 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// cmdClipboardWatch ejecuta el vigilante del portapapeles.
+//
+// Lo lanza el SERVICIO dentro de la sesion del usuario y lee su salida estandar;
+// no esta pensado para ejecutarse a mano. Existe como subcomando del mismo
+// binario, y no como un segundo ejecutable, para que el instalador despliegue un
+// solo archivo y la firma de codigo cubra las dos piezas a la vez.
+func cmdClipboardWatch() error {
+	// EL HILO SE FIJA. Los mensajes de ventana se entregan al hilo que creo la
+	// ventana, y el planificador de Go mueve las goroutines entre hilos del
+	// sistema cuando le conviene. Sin fijarlo, la ventana deja de recibir
+	// WM_CLIPBOARDUPDATE en cuanto la goroutine migra — y no hay ningun error:
+	// simplemente no vuelve a llegar nada, que es el peor modo de fallo posible.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	// La salida va sin bufer al proceso padre, una linea JSON por copia.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	return clipwatch.Ejecutar(ctx, os.Stdout)
 }

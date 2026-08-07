@@ -52,10 +52,20 @@ func Default(log zerolog.Logger, politica PoliticaVigente) []Collector {
 		return append(append([]string{}, p.Storage.AllowedPaths...), p.Encryption.ConfidentialPaths...)
 	}
 
+	modoPortapapeles := func() string {
+		p := politica()
+		if p == nil || p.Clipboard.Mode == "" {
+			return string(contract.ClipboardAllow)
+		}
+		return string(p.Clipboard.Mode)
+	}
+
 	return []Collector{
 		NewSessionCollector(log),
 		NewAppsCollector(log),
 		NewUSBCollector(log, modoUSB),
 		NewFilesCollector(log, rutasPolitica),
+		NewWebCollector(log),
+		NewClipboardCollector(log, modoPortapapeles),
 	}
 }
