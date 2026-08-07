@@ -39,7 +39,12 @@ type Aviso struct {
 	AplicacionOrigen string    `json:"source_app"`
 	Bytes            int64     `json:"bytes"`
 	Formato          string    `json:"format"`
-	Usuario          string    `json:"user"`
+	// Enforcement es lo que el agente HIZO de verdad, no lo que la politica
+	// pedia. Si el vaciado se intento y fallo, aqui pone "alert": un incidente
+	// que diga "bloqueado" sobre contenido que sigue en el portapapeles es peor
+	// que uno que admita que solo se alerto.
+	Enforcement string `json:"enforcement"`
+	Usuario     string `json:"user"`
 	Momento          time.Time `json:"at"`
 }
 
@@ -62,6 +67,7 @@ var (
 	procOpenClipboard             = user32.NewProc("OpenClipboard")
 	procCloseClipboard            = user32.NewProc("CloseClipboard")
 	procGetClipboardData          = user32.NewProc("GetClipboardData")
+	procEmptyClipboard            = user32.NewProc("EmptyClipboard")
 	procIsClipboardFormatAvailable = user32.NewProc("IsClipboardFormatAvailable")
 
 	kernel32       = windows.NewLazySystemDLL("kernel32.dll")
@@ -105,11 +111,43 @@ type msg struct {
 
 /* ------------------------------------------------------------ Vigilancia --- */
 
-// Ejecutar observa el portapapeles y escribe un Aviso por cada cambio.
+// Opciones son las reglas que este proceso aplica.
+//
+// Viajan como argumentos al lanzarlo, no por un canal en caliente: la politica
+// cambia cada muchos minutos y relanzar el auxiliar es instantaneo, mientras que
+// mantener un canal bidireccional abierto solo para eso añadiria un protocolo
+// —y sus fallos— a cambio de nada.
+type Opciones struct {
+	// Modo es allow, alert o block.
+	Modo string
+	// FuentesProtegidas son los procesos cuyo contenido se considera sensible.
+	// Vacio significa que el modo aplica a TODO, no que no aplique a nada.
+	FuentesProtegidas []string
+}
+
+// debeVaciar decide si hay que borrar lo que se acaba de copiar.
+func (o Opciones) debeVaciar(app string) bool {
+	if o.Modo != "block" {
+		return false
+	}
+	if len(o.FuentesProtegidas) == 0 {
+		return true
+	}
+	app = strings.ToLower(strings.TrimSpace(app))
+	for _, f := range o.FuentesProtegidas {
+		if strings.ToLower(strings.TrimSpace(f)) == app {
+			return true
+		}
+	}
+	return false
+}
+
+// Ejecutar observa el portapapeles, aplica el modo y escribe un Aviso por cada
+// cambio.
 //
 // `salida` recibe una linea JSON por copia. Bloquea hasta que el contexto se
 // cancele o la ventana se destruya.
-func Ejecutar(ctx context.Context, salida io.Writer) error {
+func Ejecutar(ctx context.Context, salida io.Writer, op Opciones) error {
 	usuario := usuarioActualCorto()
 	codificador := json.NewEncoder(salida)
 
@@ -119,7 +157,7 @@ func Ejecutar(ctx context.Context, salida io.Writer) error {
 	// de llegar sin ningun error visible.
 	hecho := make(chan error, 1)
 	go func() {
-		hecho <- bucleMensajes(ctx, func(a Aviso) {
+		hecho <- bucleMensajes(ctx, op, func(a Aviso) {
 			a.Usuario = usuario
 			_ = codificador.Encode(a)
 		})
@@ -133,7 +171,7 @@ func Ejecutar(ctx context.Context, salida io.Writer) error {
 	}
 }
 
-func bucleMensajes(ctx context.Context, alCopiar func(Aviso)) error {
+func bucleMensajes(ctx context.Context, op Opciones, alCopiar func(Aviso)) error {
 	// runtime.LockOSThread lo hace el llamador de esta funcion en main; aqui se
 	// asume ya fijado.
 	nombreClase, err := windows.UTF16PtrFromString("NortisClipWatch")
@@ -181,7 +219,7 @@ func bucleMensajes(ctx context.Context, alCopiar func(Aviso)) error {
 		return r
 	})
 
-	go medir(ctx, pendientes, alCopiar)
+	go medir(ctx, op, pendientes, alCopiar)
 
 	clase := wndClassExW{
 		Size:      uint32(unsafe.Sizeof(wndClassExW{})),
@@ -250,8 +288,9 @@ type pendiente struct {
 // un Set-Clipboard de PowerShell.
 const EsperaAntesDeMedir = 250 * time.Millisecond
 
-// medir toma el tamaño y el formato un instante despues de la copia.
-func medir(ctx context.Context, pendientes <-chan pendiente, alCopiar func(Aviso)) {
+// medir toma el tamaño y el formato un instante despues de la copia, y aplica
+// el modo de la politica.
+func medir(ctx context.Context, op Opciones, pendientes <-chan pendiente, alCopiar func(Aviso)) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -263,11 +302,22 @@ func medir(ctx context.Context, pendientes <-chan pendiente, alCopiar func(Aviso
 			case <-time.After(EsperaAntesDeMedir):
 			}
 
-			formato, bytes := describirContenido()
+			vaciar := op.debeVaciar(p.App)
+			formato, bytes, vaciado := describirContenido(vaciar)
+
+			aplicado := op.Modo
+			if vaciar && !vaciado {
+				// Se intento y no se pudo. Se reporta lo que REALMENTE paso: un
+				// incidente que diga "bloqueado" sobre contenido que sigue en el
+				// portapapeles es peor que uno que diga "alertado".
+				aplicado = "alert"
+			}
+
 			alCopiar(Aviso{
 				AplicacionOrigen: p.App,
 				Formato:          formato,
 				Bytes:            bytes,
+				Enforcement:      aplicado,
 				// La marca de tiempo es la de la COPIA, no la de la medicion:
 				// el cuarto de segundo de espera no puede desplazar el momento
 				// del hecho en la linea de tiempo del analista.
@@ -313,7 +363,18 @@ func aplicacionDuenna() string {
 // El reintento es CORTO y acotado a proposito: insistir mas tiempo bloquearia el
 // portapapeles del usuario, y ningun dato de telemetria justifica estorbar a la
 // persona que esta trabajando.
-func describirContenido() (formato string, bytes int64) {
+// Si `vaciar` es cierto, ADEMAS borra el contenido en la misma apertura.
+//
+// Hacerlo aqui y no en una segunda pasada es lo que reduce la ventana de
+// exposicion: cada apertura extra son milisegundos mas en los que otra
+// aplicacion puede pegar lo copiado.
+//
+// SOBRE LLAMAR A ESTO "BLOQUEAR": no lo es del todo, y conviene no engañarse.
+// Windows no ofrece forma soportada de IMPEDIR una copia; lo unico posible es
+// borrarla justo despues. Entre el Ctrl+C y el vaciado hay un cuarto de segundo
+// en el que un Ctrl+V es mas rapido que nosotros. Corta el caso normal —copiar
+// aqui y pegar alla— pero no detiene a quien lo intenta a proposito.
+func describirContenido(vaciar bool) (formato string, bytes int64, vaciado bool) {
 	const intentos = 5
 
 	for i := 0; i < intentos; i++ {
@@ -331,13 +392,20 @@ func describirContenido() (formato string, bytes int64) {
 			}
 		}
 
+		if vaciar {
+			// EmptyClipboard exige tener el portapapeles abierto, que es el caso.
+			if r, _, _ := procEmptyClipboard.Call(); r != 0 {
+				vaciado = true
+			}
+		}
+
 		procCloseClipboard.Call()
-		return formato, bytes
+		return formato, bytes, vaciado
 	}
 
 	// Sin poder abrirlo el evento sigue siendo util: la regla DLP compara la
 	// aplicacion de origen, no el formato ni cuantos bytes salieron.
-	return "other", 0
+	return "other", 0, false
 }
 
 // formatoAbierto clasifica el contenido. Exige el portapapeles ya abierto.

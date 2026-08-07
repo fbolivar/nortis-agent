@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -39,30 +41,45 @@ import (
 // confia en quien escribe. Un hijo con su salida redirigida solo lo puede
 // escribir el proceso que el servicio creo: el canal no existe para nadie mas.
 type ClipboardCollector struct {
-	log zerolog.Logger
-	// modo devuelve el modo de portapapeles vigente para poder informarlo.
-	modo    func() string
-	maquina *maquinaPortapapeles
+	log      zerolog.Logger
+	politica func() *contract.Policy
+	maquina  *maquinaPortapapeles
 }
 
-func NewClipboardCollector(log zerolog.Logger, modo func() string) *ClipboardCollector {
+func NewClipboardCollector(log zerolog.Logger, politica func() *contract.Policy) *ClipboardCollector {
 	return &ClipboardCollector{
-		log:     log.With().Str("recolector", "portapapeles").Logger(),
-		modo:    modo,
-		maquina: nuevaMaquinaPortapapeles(),
+		log:      log.With().Str("recolector", "portapapeles").Logger(),
+		politica: politica,
+		maquina:  nuevaMaquinaPortapapeles(),
 	}
 }
 
 func (c *ClipboardCollector) Name() string { return "portapapeles" }
 
-func (c *ClipboardCollector) enforcement() string {
-	if c.modo == nil {
-		return string(contract.ClipboardAllow)
+// opciones traduce la politica vigente a las reglas del vigilante.
+func (c *ClipboardCollector) opciones() clipwatch.Opciones {
+	if c.politica == nil {
+		return clipwatch.Opciones{Modo: string(contract.ClipboardAllow)}
 	}
-	if m := c.modo(); m != "" {
-		return m
+	p := c.politica()
+	if p == nil || p.Clipboard.Mode == "" {
+		return clipwatch.Opciones{Modo: string(contract.ClipboardAllow)}
 	}
-	return string(contract.ClipboardAllow)
+	return clipwatch.Opciones{
+		Modo:              string(p.Clipboard.Mode),
+		FuentesProtegidas: p.Clipboard.ProtectedSources,
+	}
+}
+
+// firma resume las opciones para detectar cambios de politica.
+//
+// Cuando cambia, hay que relanzar el auxiliar: las reglas viajan como argumentos
+// al arrancarlo, asi que un proceso ya en marcha seguiria aplicando las
+// anteriores indefinidamente.
+func firma(op clipwatch.Opciones) string {
+	fuentes := append([]string{}, op.FuentesProtegidas...)
+	sort.Strings(fuentes)
+	return op.Modo + "|" + strings.Join(fuentes, ",")
 }
 
 func (c *ClipboardCollector) Run(ctx context.Context, emit Emit) {
@@ -87,7 +104,7 @@ func (c *ClipboardCollector) observarAqui(ctx context.Context, emit Emit) {
 
 	go func() {
 		defer escritor.Close()
-		if err := clipwatch.Ejecutar(ctx, escritor); err != nil && ctx.Err() == nil {
+		if err := clipwatch.Ejecutar(ctx, escritor, c.opciones()); err != nil && ctx.Err() == nil {
 			c.log.Warn().Err(err).Msg("la vigilancia del portapapeles termino")
 		}
 	}()
@@ -135,7 +152,13 @@ func (c *ClipboardCollector) lanzarYLeer(ctx context.Context, emit Emit) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, exe, "clipboard-watch")
+	op := c.opciones()
+	args := []string{"clipboard-watch", "-mode", op.Modo}
+	if len(op.FuentesProtegidas) > 0 {
+		args = append(args, "-protected", strings.Join(op.FuentesProtegidas, ","))
+	}
+
+	cmd := exec.CommandContext(ctx, exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Token: syscall.Token(token),
 		// Sin ventana: el usuario no debe ver una consola aparecer y
@@ -151,6 +174,30 @@ func (c *ClipboardCollector) lanzarYLeer(ctx context.Context, emit Emit) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+
+	// Si la politica cambia, el auxiliar en marcha seguiria aplicando las reglas
+	// con las que arranco. Se le termina para que el supervisor lo relance con
+	// las nuevas: es instantaneo y evita mantener un canal bidireccional solo
+	// para esto.
+	hijo, detener := context.WithCancel(ctx)
+	defer detener()
+	go func() {
+		inicial := firma(op)
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-hijo.Done():
+				return
+			case <-t.C:
+				if firma(c.opciones()) != inicial {
+					c.log.Info().Msg("la politica de portapapeles cambio; se relanza el vigilante")
+					_ = cmd.Process.Kill()
+					return
+				}
+			}
+		}
+	}()
 
 	c.consumir(ctx, salida, emit)
 	return cmd.Wait()
@@ -175,6 +222,14 @@ func (c *ClipboardCollector) consumir(ctx context.Context, r interface{ Read([]b
 			continue
 		}
 
+		// El enforcement lo dice el AUXILIAR, no la politica: es el unico que
+		// sabe si el vaciado se pudo hacer. Tomarlo de la politica reportaria
+		// "bloqueado" sobre contenido que sigue en el portapapeles.
+		aplicado := a.Enforcement
+		if aplicado == "" {
+			aplicado = c.opciones().Modo
+		}
+
 		ev := c.maquina.observar(copiaPortapapeles{
 			AplicacionOrigen: a.AplicacionOrigen,
 			Bytes:            a.Bytes,
@@ -184,7 +239,7 @@ func (c *ClipboardCollector) consumir(ctx context.Context, r interface{ Read([]b
 			Formato: FormatoValido(a.Formato),
 			Usuario: a.Usuario,
 			Momento: a.Momento,
-		}, c.enforcement())
+		}, aplicado)
 
 		if ev != nil {
 			c.log.Info().

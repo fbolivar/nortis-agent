@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/kardianos/service"
@@ -54,7 +55,7 @@ func main() {
 	case "clipboard-watch":
 		// Verbo interno: lo lanza el servicio DENTRO de la sesion del usuario.
 		// No es para uso manual y por eso no aparece en la ayuda.
-		err = cmdClipboardWatch()
+		err = cmdClipboardWatch(os.Args[2:])
 	case "status":
 		err = cmdStatus()
 	case "selftest":
@@ -447,7 +448,21 @@ func min(a, b int) int {
 // no esta pensado para ejecutarse a mano. Existe como subcomando del mismo
 // binario, y no como un segundo ejecutable, para que el instalador despliegue un
 // solo archivo y la firma de codigo cubra las dos piezas a la vez.
-func cmdClipboardWatch() error {
+func cmdClipboardWatch(args []string) error {
+	fs := flag.NewFlagSet("clipboard-watch", flag.ExitOnError)
+	modo := fs.String("mode", "allow", "modo de portapapeles: allow, alert o block")
+	protegidas := fs.String("protected", "", "procesos protegidos, separados por comas")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var fuentes []string
+	for _, f := range strings.Split(*protegidas, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			fuentes = append(fuentes, f)
+		}
+	}
+
 	// EL HILO SE FIJA. Los mensajes de ventana se entregan al hilo que creo la
 	// ventana, y el planificador de Go mueve las goroutines entre hilos del
 	// sistema cuando le conviene. Sin fijarlo, la ventana deja de recibir
@@ -460,5 +475,8 @@ func cmdClipboardWatch() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	return clipwatch.Ejecutar(ctx, os.Stdout)
+	return clipwatch.Ejecutar(ctx, os.Stdout, clipwatch.Opciones{
+		Modo:              *modo,
+		FuentesProtegidas: fuentes,
+	})
 }
