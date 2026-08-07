@@ -1,0 +1,403 @@
+// Comando nortis-agent: servicio de endpoint de Nortis.
+//
+// Verbos:
+//
+//	enroll -key <API_KEY> [-url <CONSOLA>]   registra el equipo y guarda la credencial
+//	install | start | stop | uninstall       ciclo de vida del servicio de Windows
+//	run                                      ejecuta en primer plano (diagnostico)
+//	status                                   estado local, sin tocar la red
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"time"
+
+	"github.com/kardianos/service"
+	"github.com/rs/zerolog"
+	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/fbolivar/nortis-agent/internal/agentcfg"
+	"github.com/fbolivar/nortis-agent/internal/contract"
+	"github.com/fbolivar/nortis-agent/internal/machineid"
+	"github.com/fbolivar/nortis-agent/internal/queue"
+	svc "github.com/fbolivar/nortis-agent/internal/service"
+	"github.com/fbolivar/nortis-agent/internal/syncer"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
+	}
+
+	var err error
+	switch os.Args[1] {
+	case "enroll":
+		err = cmdEnroll(os.Args[2:])
+	case "install", "uninstall", "start", "stop", "restart":
+		err = cmdControl(os.Args[1])
+	case "run":
+		err = cmdRun(true)
+	case "service":
+		// Verbo interno: es con el que el gestor de servicios de Windows
+		// arranca el binario.
+		err = cmdRun(false)
+	case "status":
+		err = cmdStatus()
+	case "selftest":
+		err = cmdSelfTest()
+	case "version":
+		fmt.Printf("nortis-agent %s (contrato de politica v%d)\n", contract.AgentVersion, contract.PolicySchemaVersion)
+	default:
+		usage()
+		os.Exit(2)
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprint(os.Stderr, `nortis-agent — agente de endpoint de Nortis
+
+  enroll -key <API_KEY> [-url <URL>]   Registra este equipo en la consola
+  install                              Instala el servicio de Windows
+  start | stop | restart               Controla el servicio
+  uninstall                            Desinstala el servicio
+  run                                  Ejecuta en primer plano (diagnostico)
+  status                               Estado local, sin tocar la red
+  selftest                             Valida el camino cola -> consola
+  version                              Version del agente
+
+La credencial se guarda cifrada con DPAPI y solo se puede descifrar en esta
+maquina. El servicio requiere privilegios de administrador para instalarse.
+`)
+}
+
+/* --------------------------------------------------------------- Logger --- */
+
+// newLogger escribe a archivo con rotacion y, opcionalmente, a consola.
+//
+// La rotacion con tope no es un lujo: un agente que corre durante meses y
+// escribe un log sin limite acaba llenando el disco del cliente — el mismo
+// problema que el producto dice prevenir, causado por el propio agente.
+func newLogger(alsoConsole bool) zerolog.Logger {
+	rotador := &lumberjack.Logger{
+		Filename:   agentcfg.LogPath(),
+		MaxSize:    10, // MB
+		MaxBackups: 3,
+		MaxAge:     30, // dias
+		Compress:   true,
+	}
+
+	var w io.Writer = rotador
+	if alsoConsole {
+		w = zerolog.MultiLevelWriter(
+			rotador,
+			zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339},
+		)
+	}
+
+	return zerolog.New(w).With().Timestamp().Logger()
+}
+
+/* --------------------------------------------------------------- enroll --- */
+
+func cmdEnroll(args []string) error {
+	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
+	key := fs.String("key", "", "credencial del tenant (nrt_live_...)")
+	url := fs.String("url", "", "URL de la consola")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *key == "" {
+		return errors.New("falta -key")
+	}
+
+	cfg, err := agentcfg.Load()
+	if err != nil {
+		return err
+	}
+	if *url != "" {
+		cfg.ConsoleURL = *url
+		if err := agentcfg.Save(cfg); err != nil {
+			return err
+		}
+	}
+
+	fingerprint, err := machineid.Fingerprint()
+	if err != nil {
+		return fmt.Errorf("no se pudo derivar la identidad de la maquina: %w", err)
+	}
+
+	log := newLogger(true)
+
+	q, err := queue.Open(agentcfg.QueuePath())
+	if err != nil {
+		return err
+	}
+	defer q.Close()
+
+	client := syncer.New(cfg.ConsoleURL, *key)
+	agent := syncer.NewAgent(cfg, q, client, log)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	err = agent.Enroll(ctx, contract.EnrollRequest{
+		MachineFingerprint: fingerprint,
+		Hostname:           machineid.Hostname(),
+		OSVersion:          machineid.OSVersion(),
+		AgentVersion:       contract.AgentVersion,
+		User:               machineid.CurrentUser(),
+	})
+	if err != nil {
+		return fmt.Errorf("no se pudo registrar el equipo: %w", err)
+	}
+
+	// La credencial se guarda DESPUES de que la consola la acepte. Al reves se
+	// dejaria en disco una clave invalida y el fallo se descubriria mucho mas
+	// tarde, cuando alguien notara que el equipo nunca reporto.
+	if err := agentcfg.SaveCredential(*key); err != nil {
+		return fmt.Errorf("no se pudo proteger la credencial: %w", err)
+	}
+
+	// Se descarga la politica de inmediato: si el servicio arranca antes del
+	// primer ciclo, ya tiene reglas que aplicar.
+	if err := agent.RefreshPolicy(ctx); err != nil {
+		log.Warn().Err(err).Msg("no se pudo descargar la politica inicial; se hara en el primer ciclo")
+	}
+
+	fmt.Printf("Equipo registrado.\n  endpoint: %s\n  consola:  %s\n\nSiguiente paso: nortis-agent install\n",
+		agent.EndpointID(), cfg.ConsoleURL)
+	return nil
+}
+
+/* ------------------------------------------------------------- servicio --- */
+
+func buildProgram(console bool) (*svc.Program, *queue.Queue, error) {
+	cfg, err := agentcfg.Load()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	apiKey, err := agentcfg.LoadCredential()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	log := newLogger(console)
+
+	q, err := queue.Open(agentcfg.QueuePath())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	client := syncer.New(cfg.ConsoleURL, apiKey)
+	agent := syncer.NewAgent(cfg, q, client, log)
+
+	return svc.NewProgram(cfg, agent, log), q, nil
+}
+
+func cmdRun(console bool) error {
+	prog, q, err := buildProgram(console)
+	if err != nil {
+		return err
+	}
+	defer q.Close()
+
+	s, err := service.New(prog, svc.Config)
+	if err != nil {
+		return err
+	}
+	return s.Run()
+}
+
+func cmdControl(action string) error {
+	// Para install/uninstall no hace falta credencial ni cola: solo hablar con
+	// el gestor de servicios. Exigirlas obligaria a enrolar antes de instalar, y
+	// el instalador MSI hace justo lo contrario.
+	s, err := service.New(&noopProgram{}, svc.Config)
+	if err != nil {
+		return err
+	}
+
+	if err := service.Control(s, action); err != nil {
+		return fmt.Errorf("%s: %w (¿tiene privilegios de administrador?)", action, err)
+	}
+
+	fmt.Printf("Servicio: %s completado.\n", action)
+	return nil
+}
+
+// noopProgram existe solo para poder construir el service.Service en las
+// operaciones de control, que no ejecutan nada.
+type noopProgram struct{}
+
+func (n *noopProgram) Start(service.Service) error { return nil }
+func (n *noopProgram) Stop(service.Service) error  { return nil }
+
+/* ------------------------------------------------------------- selftest --- */
+
+// cmdSelfTest valida el camino completo recolector -> cola -> consola.
+//
+// Existe porque los recolectores reales son Fase 1 y todavia no hay ninguno: sin
+// esto, la unica forma de saber si la sincronizacion funciona seria esperar a
+// tener el USN Journal enganchado, y entonces un fallo podria estar en
+// cualquiera de las dos mitades. Se valida la tuberia antes de conectarle nada.
+//
+// Los eventos que emite son REALES y quedan en la telemetria del equipo: es un
+// diagnostico para instalacion y soporte, no algo que ejecutar en produccion a
+// la ligera.
+func cmdSelfTest() error {
+	cfg, err := agentcfg.Load()
+	if err != nil {
+		return err
+	}
+
+	apiKey, err := agentcfg.LoadCredential()
+	if err != nil {
+		return err
+	}
+
+	log := newLogger(true)
+
+	q, err := queue.Open(agentcfg.QueuePath())
+	if err != nil {
+		return err
+	}
+	defer q.Close()
+
+	agent := syncer.NewAgent(cfg, q, syncer.New(cfg.ConsoleURL, apiKey), log)
+	if err := agent.Restore(); err != nil {
+		return err
+	}
+	if agent.EndpointID() == "" {
+		return errors.New("el agente no esta enrolado: ejecute primero nortis-agent enroll")
+	}
+
+	antes, _ := q.Len()
+
+	ahora := time.Now().UTC()
+	agent.Enqueue(contract.Event{
+		Type: contract.EventLogon, OccurredAt: ahora,
+		Payload: map[string]any{"user": machineid.CurrentUser(), "session_type": "console"},
+	})
+	agent.Enqueue(contract.Event{
+		Type: contract.EventAppOpen, OccurredAt: ahora,
+		Payload: map[string]any{"app": "nortis-agent.exe", "category": "seguridad"},
+	})
+	// Evento deliberadamente invalido: la consola debe descartarlo SIN tumbar el
+	// lote. Si tumbara el lote, un bug del agente dejaria al equipo mudo.
+	agent.Enqueue(contract.Event{
+		Type: contract.EventWebVisit, OccurredAt: ahora,
+		Payload: map[string]any{"domain": ""},
+	})
+
+	encolados, _ := q.Len()
+	fmt.Printf("encolados: %d eventos (habia %d)\n", encolados-antes, antes)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	enviados, err := agent.Flush(ctx)
+	if err != nil {
+		return fmt.Errorf("la sincronizacion fallo: %w", err)
+	}
+
+	restantes, _ := q.Len()
+	fmt.Printf("aceptados por la consola: %d\nen cola tras sincronizar: %d\n", enviados, restantes)
+
+	if restantes != 0 {
+		return fmt.Errorf("la cola no quedo vacia: %d eventos siguen pendientes", restantes)
+	}
+
+	necesita, err := agent.Heartbeat(ctx, machineid.CurrentUser())
+	if err != nil {
+		return fmt.Errorf("el latido fallo: %w", err)
+	}
+	fmt.Printf("latido: correcto (politica nueva: %v, cuarentena: %v)\n", necesita, agent.Quarantined())
+
+	fmt.Println("\nAutodiagnostico superado: cola, sincronizacion, latido y politica funcionan.")
+	return nil
+}
+
+/* --------------------------------------------------------------- status --- */
+
+func cmdStatus() error {
+	cfg, err := agentcfg.Load()
+	if err != nil {
+		return err
+	}
+
+	q, err := queue.Open(agentcfg.QueuePath())
+	if err != nil {
+		return err
+	}
+	defer q.Close()
+
+	pendientes, _ := q.Len()
+	endpointID, _ := q.GetMeta(queue.MetaEndpointID)
+	lastSync, _ := q.GetMeta(queue.MetaLastSyncAt)
+	politica, _ := q.GetMeta(queue.MetaPolicyUpdatedAt)
+
+	fingerprint, ferr := machineid.Fingerprint()
+	if ferr != nil {
+		fingerprint = "(no disponible)"
+	}
+
+	fmt.Printf(`nortis-agent %s
+
+  consola:          %s
+  equipo:           %s
+  huella:           %s
+  credencial:       %s
+  eventos en cola:  %d
+  ultima sincro:    %s
+  politica desde:   %s
+  datos en:         %s
+`,
+		contract.AgentVersion,
+		cfg.ConsoleURL,
+		orDash(endpointID),
+		fingerprint[:min(16, len(fingerprint))],
+		credentialState(),
+		pendientes,
+		orDash(lastSync),
+		orDash(politica),
+		agentcfg.Dir(),
+	)
+	return nil
+}
+
+func credentialState() string {
+	if !agentcfg.HasCredential() {
+		return "sin enrolar"
+	}
+	if _, err := agentcfg.LoadCredential(); err != nil {
+		return "presente pero ilegible en esta maquina"
+	}
+	return "protegida con DPAPI"
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

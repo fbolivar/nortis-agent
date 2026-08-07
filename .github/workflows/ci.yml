@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verificacion:
+    name: Vet, tests y build
+    # windows-latest y no ubuntu: el agente es un servicio de Windows y buena
+    # parte del codigo esta detras de `//go:build windows` (DPAPI, registro,
+    # gestor de servicios). En Linux esos archivos ni se compilan, asi que un CI
+    # verde en Ubuntu no probaria nada de lo que de verdad se despliega.
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      # Falla si go.mod o go.sum no estan al dia. Sin esto, CI podria resolver
+      # versiones distintas a las del desarrollador y validar algo que no es lo
+      # que se despliega.
+      - name: Verificar dependencias
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Tests
+        run: go test -race ./...
+
+      - name: Build
+        run: go build -o dist/nortis-agent.exe ./cmd/nortis-agent
+
+      - name: Publicar binario
+        uses: actions/upload-artifact@v4
+        with:
+          name: nortis-agent-windows-amd64
+          path: dist/nortis-agent.exe
+          retention-days: 14
+
+  lint:
+    name: golangci-lint
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  auditoria:
+    name: Vulnerabilidades conocidas
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      # govulncheck solo reporta vulnerabilidades en codigo REALMENTE alcanzable,
+      # no en cualquier dependencia del grafo. Eso hace que sus alertas se
+      # atiendan en vez de aprenderse a ignorar.
+      #
+      # Corre en Ubuntu porque analiza el modulo, no el binario de Windows, y el
+      # runner de Linux es mas barato.
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

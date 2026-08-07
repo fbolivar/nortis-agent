@@ -1,0 +1,224 @@
+// Package contract define los tipos que viajan entre el agente y la consola.
+//
+// Es el espejo en Go de lo que la consola declara en TypeScript:
+//   - src/shared/schemas/agent-api.ts  (peticiones y respuestas HTTP)
+//   - src/shared/schemas/telemetry.ts  (forma del payload de cada evento)
+//   - src/shared/schemas/policy.ts     (forma de la politica)
+//
+// Cualquier cambio aqui tiene que corresponderse con un cambio alli. Cuando los
+// dos lados divergen, el sintoma no es un error de compilacion sino telemetria
+// que la consola descarta en silencio — por eso el sincronizador registra
+// siempre cuantos eventos fueron rechazados y por que.
+package contract
+
+import "time"
+
+// AgentVersion es la version que el agente reporta y con la que se compara
+// contra minimum_supported_version de la consola.
+const AgentVersion = "1.0.0"
+
+// PolicySchemaVersion es la version del contrato de politica que este agente
+// SABE aplicar.
+//
+// Si la consola devuelve un schema_version mayor, el agente NO debe aplicar la
+// politica a medias: sigue con la ultima que conoce y se reporta desactualizado.
+// Aplicar la mitad de una politica de seguridad es peor que no aplicarla,
+// porque el panel mostraria el equipo como cubierto cuando no lo esta.
+const PolicySchemaVersion = 1
+
+/* -------------------------------------------------------------- Eventos --- */
+
+// EventType es el tipo de un evento de telemetria. La lista debe coincidir con
+// el enum event_type de Postgres: un valor desconocido hace que la fila entera
+// se rechace en la escritura.
+type EventType string
+
+const (
+	EventAppOpen       EventType = "app_open"
+	EventFileCreated   EventType = "file_created"
+	EventFileModified  EventType = "file_modified"
+	EventFileDeleted   EventType = "file_deleted"
+	EventUSBConnected  EventType = "usb_connected"
+	EventWebVisit      EventType = "web_visit"
+	EventClipboardCopy EventType = "clipboard_copy"
+	EventPrintJob      EventType = "print_job"
+	EventWindowFocus   EventType = "window_focus"
+	EventLogon         EventType = "logon"
+	EventLogoff        EventType = "logoff"
+	EventIdleStart     EventType = "idle_start"
+	EventIdleEnd       EventType = "idle_end"
+)
+
+// Event es una unidad de telemetria.
+//
+// Payload va como map y no como struct tipado a proposito: cada tipo de evento
+// tiene su forma, y un struct con todos los campos de todos los tipos obligaria
+// a emitir decenas de campos vacios en cada evento. La consola valida la forma
+// contra el esquema que corresponde al tipo.
+//
+// REGLA QUE NO SE PUEDE ROMPER: aqui nunca entra CONTENIDO. Rutas, dominios,
+// nombres de proceso y tamaños; nunca el texto de un archivo, el cuerpo de un
+// correo ni lo que el usuario copio al portapapeles. Nortis prueba QUE ocurrio
+// un movimiento de informacion, no lo reproduce.
+type Event struct {
+	Type       EventType      `json:"event_type"`
+	OccurredAt time.Time      `json:"occurred_at"`
+	Payload    map[string]any `json:"payload,omitempty"`
+}
+
+/* ------------------------------------------------------------ Peticiones --- */
+
+type EnrollRequest struct {
+	MachineFingerprint string `json:"machine_fingerprint"`
+	Hostname           string `json:"hostname"`
+	OSVersion          string `json:"os_version,omitempty"`
+	AgentVersion       string `json:"agent_version,omitempty"`
+	User               string `json:"user,omitempty"`
+}
+
+type EnrollResponse struct {
+	EndpointID     string `json:"endpoint_id"`
+	ProfileID      string `json:"profile_id"`
+	OrganizationID string `json:"organization_id"`
+}
+
+type IngestRequest struct {
+	EndpointID string  `json:"endpoint_id"`
+	Events     []Event `json:"events"`
+}
+
+// IngestResponse informa cuantos eventos entraron y cuantos no.
+//
+// Rejected NO es un error: la consola descarta eventos individuales sin tumbar
+// el lote (por ejemplo, con fecha fuera de la ventana de retencion). El agente
+// debe darlos por enviados igualmente — reintentarlos produciria un bucle
+// infinito sobre eventos que nunca van a entrar.
+type IngestResponse struct {
+	Accepted int `json:"accepted"`
+	Rejected int `json:"rejected"`
+	Details  []struct {
+		Index  int    `json:"index"`
+		Reason string `json:"reason"`
+	} `json:"details,omitempty"`
+}
+
+type PolicyRequest struct {
+	EndpointID string `json:"endpoint_id"`
+}
+
+// PolicyResponse. Profile puede ser nil: significa que el equipo no tiene perfil
+// asignado. En ese caso el agente observa pero NO interviene — inventarse una
+// politica permisiva o restrictiva seria tomar por el cliente una decision que
+// no tomo.
+type PolicyResponse struct {
+	Profile *struct {
+		ID            string    `json:"id"`
+		Name          string    `json:"name"`
+		SchemaVersion int       `json:"schema_version"`
+		Config        Policy    `json:"config"`
+		UpdatedAt     time.Time `json:"updated_at"`
+	} `json:"profile"`
+	MonitoringAllowed    bool `json:"monitoring_allowed"`
+	ConsoleSchemaVersion int  `json:"console_schema_version"`
+}
+
+type HeartbeatRequest struct {
+	EndpointID   string `json:"endpoint_id"`
+	AgentVersion string `json:"agent_version,omitempty"`
+	User         string `json:"user,omitempty"`
+}
+
+type HeartbeatResponse struct {
+	Acknowledged bool `json:"acknowledged"`
+	// PolicyUpdatedAt permite saber si hay que volver a descargar la politica
+	// sin pedirla entera en cada latido.
+	PolicyUpdatedAt *time.Time `json:"policy_updated_at"`
+	Quarantined     bool       `json:"quarantined"`
+}
+
+type VersionResponse struct {
+	CurrentVersion          string  `json:"current_version"`
+	MinimumSupportedVersion string  `json:"minimum_supported_version"`
+	PolicySchemaVersion     int     `json:"policy_schema_version"`
+	DownloadURL             *string `json:"download_url"`
+	SHA256                  *string `json:"sha256"`
+}
+
+// APIError es la forma uniforme de error de la consola. El agente decide que
+// hacer por Code, nunca por el texto del mensaje.
+type APIError struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+/* -------------------------------------------------------------- Politica --- */
+
+// Policy es la configuracion que el agente aplica. Espejo de policyConfigSchema.
+type Policy struct {
+	Storage struct {
+		// Vacio significa SIN RESTRICCION, no "prohibido todo". Lo segundo
+		// dejaria al usuario sin poder trabajar en cuanto alguien creara un
+		// perfil a medias.
+		AllowedPaths      []string `json:"allowed_paths"`
+		BlockedExtensions []string `json:"blocked_extensions"`
+	} `json:"storage"`
+
+	USB struct {
+		Mode            USBMode  `json:"mode"`
+		SerialAllowlist []string `json:"serial_allowlist"`
+	} `json:"usb"`
+
+	Web struct {
+		BlockedDomains []string `json:"blocked_domains"`
+		// Si tiene elementos funciona como lista blanca: todo lo demas se bloquea.
+		AllowedDomains []string `json:"allowed_domains"`
+		BlockWebmail   bool     `json:"block_webmail"`
+	} `json:"web"`
+
+	Clipboard struct {
+		Mode             ClipboardMode `json:"mode"`
+		ProtectedSources []string      `json:"protected_sources"`
+	} `json:"clipboard"`
+
+	Printing struct {
+		Mode PrintingMode `json:"mode"`
+	} `json:"printing"`
+
+	Encryption struct {
+		ConfidentialPaths []string `json:"confidential_paths"`
+	} `json:"encryption"`
+
+	// Monitoring solo llega activo si el tenant tiene consentimiento firmado: la
+	// consola recorta estos campos antes de enviarlos. El agente NO debe
+	// activarlos por su cuenta bajo ninguna circunstancia.
+	Monitoring struct {
+		WindowTitles bool `json:"window_titles"`
+		Screenshots  bool `json:"screenshots"`
+	} `json:"monitoring"`
+}
+
+type USBMode string
+
+const (
+	USBAllow    USBMode = "allow"
+	USBReadOnly USBMode = "read_only"
+	USBBlock    USBMode = "block"
+)
+
+type ClipboardMode string
+
+const (
+	ClipboardAllow ClipboardMode = "allow"
+	ClipboardAlert ClipboardMode = "alert"
+	ClipboardBlock ClipboardMode = "block"
+)
+
+type PrintingMode string
+
+const (
+	PrintingAllow PrintingMode = "allow"
+	PrintingLog   PrintingMode = "log"
+	PrintingBlock PrintingMode = "block"
+)

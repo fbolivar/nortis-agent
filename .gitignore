@@ -1,0 +1,19 @@
+# Binarios compilados
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/dist/
+
+# Datos locales del agente (nunca deben versionarse: contienen la cola de
+# telemetria y la credencial protegida)
+/nortis-agent-data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Cobertura y perfiles
+*.out
+*.test

@@ -1,0 +1,266 @@
+// Package syncer habla con la API de la consola.
+//
+// PRINCIPIO RECTOR: el agente nunca bloquea al usuario esperando a la red. Todo
+// aqui tiene tiempo limite, reintenta con retroceso exponencial y se rinde
+// abriendo un cortocircuito. Si la consola esta caida una hora, el equipo del
+// usuario funciona exactamente igual — la telemetria se acumula en la cola.
+package syncer
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/fbolivar/nortis-agent/internal/contract"
+)
+
+// Errores que el llamador necesita distinguir para decidir que hacer.
+var (
+	// ErrUnauthorized: la credencial ya no sirve. NO tiene sentido reintentar;
+	// hace falta volver a enrolar el agente.
+	ErrUnauthorized = errors.New("credencial invalida o revocada")
+	// ErrRateLimited: hay que esperar. Reintentar de inmediato solo empeora.
+	ErrRateLimited = errors.New("limite de tasa excedido")
+	// ErrInvalidRequest: el lote esta mal formado. Reenviarlo tal cual daria el
+	// mismo resultado eternamente.
+	ErrInvalidRequest = errors.New("peticion invalida")
+	// ErrCircuitOpen: se acumularon fallos y el cliente dejo de intentar por un
+	// rato.
+	ErrCircuitOpen = errors.New("cortocircuito abierto")
+)
+
+type Client struct {
+	baseURL string
+	apiKey  string
+	http    *http.Client
+
+	mu              sync.Mutex
+	consecutiveFail int
+	openUntil       time.Time
+}
+
+func New(baseURL, apiKey string) *Client {
+	return &Client{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		apiKey:  apiKey,
+		http: &http.Client{
+			// Limite total por peticion. Sin el, una conexion a medio abrir
+			// puede dejar una goroutine colgada indefinidamente y, con ella, el
+			// ciclo de sincronizacion entero.
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					MinVersion: tls.VersionTLS12,
+					// InsecureSkipVerify NO se pone NUNCA, ni siquiera en
+					// desarrollo. Un agente que acepta cualquier certificado es
+					// un agente que se puede interceptar, y por ahi se va toda
+					// la telemetria de la organizacion. Para desarrollo se usa
+					// http://localhost, que no pasa por aqui.
+				},
+				MaxIdleConns:    4,
+				IdleConnTimeout: 90 * time.Second,
+			},
+		},
+	}
+}
+
+/* ------------------------------------------------------- Cortocircuito --- */
+
+const (
+	circuitThreshold = 5
+	circuitCooldown  = 2 * time.Minute
+)
+
+func (c *Client) circuitOpen() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Now().Before(c.openUntil)
+}
+
+func (c *Client) recordSuccess() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.consecutiveFail = 0
+	c.openUntil = time.Time{}
+}
+
+func (c *Client) recordFailure() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.consecutiveFail++
+	if c.consecutiveFail >= circuitThreshold {
+		// Tras varios fallos seguidos se deja de intentar un rato. Con doscientos
+		// equipos reintentando contra una consola caida, el trafico agregado
+		// impide que se recupere: el cortocircuito es tanto por el agente como
+		// por el servidor.
+		c.openUntil = time.Now().Add(circuitCooldown)
+		c.consecutiveFail = 0
+	}
+}
+
+/* -------------------------------------------------------------- Llamada --- */
+
+const maxAttempts = 3
+
+func (c *Client) post(ctx context.Context, path string, body, out any) error {
+	if c.circuitOpen() {
+		return ErrCircuitOpen
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("serializando la peticion: %w", err)
+	}
+
+	var lastErr error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			// Retroceso exponencial: 1s, 2s. Se respeta la cancelacion para que
+			// detener el servicio no tenga que esperar al reintento.
+			wait := time.Duration(math.Pow(2, float64(attempt-1))) * time.Second
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+
+		err := c.doOnce(ctx, path, payload, out)
+		if err == nil {
+			c.recordSuccess()
+			return nil
+		}
+
+		// Estos errores no mejoran reintentando: son decisiones del servidor.
+		if errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrInvalidRequest) {
+			c.recordSuccess() // el servidor respondio: la red esta bien
+			return err
+		}
+		if errors.Is(err, ErrRateLimited) {
+			c.recordSuccess()
+			return err
+		}
+
+		lastErr = err
+	}
+
+	c.recordFailure()
+	return lastErr
+}
+
+func (c *Client) doOnce(ctx context.Context, path string, payload []byte, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("User-Agent", "nortis-agent/"+contract.AgentVersion)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("red: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Se acota la lectura: una respuesta gigante de un intermediario mal
+	// configurado no puede agotar la memoria del agente.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("leyendo la respuesta: %w", err)
+	}
+
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		if out == nil {
+			return nil
+		}
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("respuesta ilegible: %w", err)
+		}
+		return nil
+
+	case resp.StatusCode == http.StatusUnauthorized:
+		return ErrUnauthorized
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return ErrRateLimited
+	case resp.StatusCode == http.StatusBadRequest:
+		return fmt.Errorf("%w: %s", ErrInvalidRequest, apiMessage(body))
+	default:
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, apiMessage(body))
+	}
+}
+
+func apiMessage(body []byte) string {
+	var e contract.APIError
+	if json.Unmarshal(body, &e) == nil && e.Error.Message != "" {
+		return e.Error.Message
+	}
+	if len(body) > 200 {
+		body = body[:200]
+	}
+	return string(body)
+}
+
+/* ------------------------------------------------------------ Endpoints --- */
+
+func (c *Client) Enroll(ctx context.Context, req contract.EnrollRequest) (contract.EnrollResponse, error) {
+	var out contract.EnrollResponse
+	err := c.post(ctx, "/api/agent/enroll", req, &out)
+	return out, err
+}
+
+func (c *Client) Ingest(ctx context.Context, req contract.IngestRequest) (contract.IngestResponse, error) {
+	var out contract.IngestResponse
+	err := c.post(ctx, "/api/agent/events", req, &out)
+	return out, err
+}
+
+func (c *Client) Policy(ctx context.Context, endpointID string) (contract.PolicyResponse, error) {
+	var out contract.PolicyResponse
+	err := c.post(ctx, "/api/agent/policy", contract.PolicyRequest{EndpointID: endpointID}, &out)
+	return out, err
+}
+
+func (c *Client) Heartbeat(ctx context.Context, req contract.HeartbeatRequest) (contract.HeartbeatResponse, error) {
+	var out contract.HeartbeatResponse
+	err := c.post(ctx, "/api/agent/heartbeat", req, &out)
+	return out, err
+}
+
+// Version consulta la version disponible. No lleva credencial: un agente con la
+// clave revocada tiene que poder enterarse igualmente de que hay una version
+// nueva — es justo el caso en que mas falta hace actualizarlo.
+func (c *Client) Version(ctx context.Context) (contract.VersionResponse, error) {
+	var out contract.VersionResponse
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/agent/version", nil)
+	if err != nil {
+		return out, err
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return out, fmt.Errorf("red: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return out, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return out, json.Unmarshal(body, &out)
+}
