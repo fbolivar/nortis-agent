@@ -8,8 +8,8 @@ Servicio de Windows en Go, binario único sin dependencias de runtime.
 
 ## Estado
 
-**Fase 0 completa y verificada contra la API real.** No hay recolectores todavía
-— eso es Fase 1.
+**Fase 0 completa y verificada contra la API real. Fase 1 en curso:** ya hay dos
+recolectores, sesión y aplicaciones.
 
 | | |
 |---|---|
@@ -20,7 +20,10 @@ Servicio de Windows en Go, binario único sin dependencias de runtime.
 | Sincronización | ✅ lote enviado y confirmado por la consola |
 | Política | ✅ descargada, cacheada y aplicada desde caché sin red |
 | Latido | ✅ con detección de cuarentena y de política nueva |
-| Recolectores | ⛔ Fase 1 |
+| Recolector de sesión | ✅ logon, logoff e inactividad vía WTS |
+| Recolector de aplicaciones | ✅ `app_open` con categoría y ruta del ejecutable |
+| Recolector de navegación | ⛔ resto de Fase 1 |
+| Recolectores de Fase 2+ | ⛔ no empezar hasta revisión |
 | Instalador MSI firmado | ⛔ pendiente |
 
 ## Uso
