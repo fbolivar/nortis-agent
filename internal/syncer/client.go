@@ -40,18 +40,25 @@ var (
 
 type Client struct {
 	baseURL string
-	apiKey  string
+	orgKey  string
 	http    *http.Client
+
+	// credMu protege endpointCred, que se rellena al enrolar y cambia si el
+	// equipo se re-enrola: la consola ROTA la credencial en cada alta.
+	credMu       sync.RWMutex
+	endpointCred string
 
 	mu              sync.Mutex
 	consecutiveFail int
 	openUntil       time.Time
 }
 
-func New(baseURL, apiKey string) *Client {
+// New construye el cliente con la clave de la ORGANIZACION, que solo sirve para
+// el alta. La credencial del equipo se instala despues con SetEndpointCredential.
+func New(baseURL, orgKey string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		apiKey:  apiKey,
+		orgKey:  orgKey,
 		http: &http.Client{
 			// Limite total por peticion. Sin el, una conexion a medio abrir
 			// puede dejar una goroutine colgada indefinidamente y, con ella, el
@@ -71,6 +78,27 @@ func New(baseURL, apiKey string) *Client {
 			},
 		},
 	}
+}
+
+/* --------------------------------------------------------- Credenciales --- */
+
+// ErrNotEnrolled se devuelve cuando se intenta una operacion que exige la
+// credencial del equipo sin haberla instalado. Es distinto de ErrUnauthorized:
+// aqui no hemos llegado a preguntarle nada al servidor.
+var ErrNotEnrolled = errors.New("el agente no esta enrolado: falta la credencial del equipo")
+
+// SetEndpointCredential instala la credencial propia del equipo. La llama el
+// enrolamiento y, al arrancar, la restauracion del estado guardado.
+func (c *Client) SetEndpointCredential(cred string) {
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
+	c.endpointCred = cred
+}
+
+func (c *Client) endpointCredential() string {
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	return c.endpointCred
 }
 
 /* ------------------------------------------------------- Cortocircuito --- */
@@ -111,7 +139,14 @@ func (c *Client) recordFailure() {
 
 const maxAttempts = 3
 
-func (c *Client) post(ctx context.Context, path string, body, out any) error {
+// post envia una peticion firmada con `credential`. La credencial se pasa
+// explicitamente en cada llamada, en vez de guardarse una sola en el cliente,
+// para que sea imposible mandar la clave de la organizacion a una ruta de
+// telemetria por descuido: aqui se ve cual va en cada sitio.
+func (c *Client) post(ctx context.Context, path, credential string, body, out any) error {
+	if credential == "" {
+		return ErrNotEnrolled
+	}
 	if c.circuitOpen() {
 		return ErrCircuitOpen
 	}
@@ -135,7 +170,7 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 			}
 		}
 
-		err := c.doOnce(ctx, path, payload, out)
+		err := c.doOnce(ctx, path, credential, payload, out)
 		if err == nil {
 			c.recordSuccess()
 			return nil
@@ -158,13 +193,13 @@ func (c *Client) post(ctx context.Context, path string, body, out any) error {
 	return lastErr
 }
 
-func (c *Client) doOnce(ctx context.Context, path string, payload []byte, out any) error {
+func (c *Client) doOnce(ctx context.Context, path, credential string, payload []byte, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+credential)
 	req.Header.Set("User-Agent", "nortis-agent/"+contract.AgentVersion)
 
 	resp, err := c.http.Do(req)
@@ -214,27 +249,31 @@ func apiMessage(body []byte) string {
 
 /* ------------------------------------------------------------ Endpoints --- */
 
+// Enroll es la UNICA llamada que presenta la clave de la organizacion, y lo que
+// devuelve a cambio es la credencial propia del equipo. El llamador debe
+// instalarla con SetEndpointCredential y persistirla: viaja en claro una sola
+// vez.
 func (c *Client) Enroll(ctx context.Context, req contract.EnrollRequest) (contract.EnrollResponse, error) {
 	var out contract.EnrollResponse
-	err := c.post(ctx, "/api/agent/enroll", req, &out)
+	err := c.post(ctx, "/api/agent/enroll", c.orgKey, req, &out)
 	return out, err
 }
 
 func (c *Client) Ingest(ctx context.Context, req contract.IngestRequest) (contract.IngestResponse, error) {
 	var out contract.IngestResponse
-	err := c.post(ctx, "/api/agent/events", req, &out)
+	err := c.post(ctx, "/api/agent/events", c.endpointCredential(), req, &out)
 	return out, err
 }
 
 func (c *Client) Policy(ctx context.Context, endpointID string) (contract.PolicyResponse, error) {
 	var out contract.PolicyResponse
-	err := c.post(ctx, "/api/agent/policy", contract.PolicyRequest{EndpointID: endpointID}, &out)
+	err := c.post(ctx, "/api/agent/policy", c.endpointCredential(), contract.PolicyRequest{EndpointID: endpointID}, &out)
 	return out, err
 }
 
 func (c *Client) Heartbeat(ctx context.Context, req contract.HeartbeatRequest) (contract.HeartbeatResponse, error) {
 	var out contract.HeartbeatResponse
-	err := c.post(ctx, "/api/agent/heartbeat", req, &out)
+	err := c.post(ctx, "/api/agent/heartbeat", c.endpointCredential(), req, &out)
 	return out, err
 }
 

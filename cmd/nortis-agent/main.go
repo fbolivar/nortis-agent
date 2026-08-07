@@ -152,22 +152,31 @@ func cmdEnroll(args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
+	// Enroll protege con DPAPI la credencial que devuelve la consola ANTES de dar
+	// el alta por terminada.
 	err = agent.Enroll(ctx, contract.EnrollRequest{
 		MachineFingerprint: fingerprint,
 		Hostname:           machineid.Hostname(),
 		OSVersion:          machineid.OSVersion(),
 		AgentVersion:       contract.AgentVersion,
 		User:               machineid.CurrentUser(),
-	})
+	}, agentcfg.SaveEndpointCredential)
 	if err != nil {
 		return fmt.Errorf("no se pudo registrar el equipo: %w", err)
 	}
 
-	// La credencial se guarda DESPUES de que la consola la acepte. Al reves se
-	// dejaria en disco una clave invalida y el fallo se descubriria mucho mas
-	// tarde, cuando alguien notara que el equipo nunca reporto.
-	if err := agentcfg.SaveCredential(*key); err != nil {
-		return fmt.Errorf("no se pudo proteger la credencial: %w", err)
+	// LA CLAVE DE LA ORGANIZACION NO SE GUARDA: ya cumplio su unica funcion.
+	//
+	// Dejarla en disco era el agujero. La misma clave vivia en cada portatil de
+	// la flota, y quien la extrajera de uno podia enrolar equipos nuevos y
+	// —antes de separar las credenciales— escribir telemetria en nombre de
+	// cualquier otro equipo del cliente. De aqui en adelante el agente firma
+	// todo con la credencial propia.
+	//
+	// Se borra tambien la que hubiera dejado una version anterior del agente,
+	// que si la persistia.
+	if err := agentcfg.DiscardOrganizationKey(); err != nil {
+		log.Warn().Err(err).Msg("no se pudo borrar del disco la clave de la organizacion; conviene revisarlo")
 	}
 
 	// Se descarga la politica de inmediato: si el servicio arranca antes del
@@ -189,7 +198,10 @@ func buildProgram(console bool) (*svc.Program, *queue.Queue, error) {
 		return nil, nil, err
 	}
 
-	apiKey, err := agentcfg.LoadCredential()
+	// El servicio arranca con la credencial del EQUIPO. La de la organizacion ya
+	// no existe en disco tras el alta, y aunque existiera no serviria: la
+	// consola solo la acepta para enrolar.
+	endpointCred, err := agentcfg.LoadEndpointCredential()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -201,7 +213,12 @@ func buildProgram(console bool) (*svc.Program, *queue.Queue, error) {
 		return nil, nil, err
 	}
 
-	client := syncer.New(cfg.ConsoleURL, apiKey)
+	// La clave de organizacion va vacia: este proceso no vuelve a enrolar. Si
+	// alguna vez lo intentara, el cliente falla de inmediato por credencial
+	// ausente en vez de mandar una peticion sin firmar.
+	client := syncer.New(cfg.ConsoleURL, "")
+	client.SetEndpointCredential(endpointCred)
+
 	agent := syncer.NewAgent(cfg, q, client, log)
 
 	return svc.NewProgram(cfg, agent, log), q, nil
