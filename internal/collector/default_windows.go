@@ -30,14 +30,6 @@ type PoliticaVigente func() *contract.Policy
 // no se recolectan aqui y que el agente no activa por su cuenta bajo ninguna
 // circunstancia.
 func Default(log zerolog.Logger, politica PoliticaVigente) []Collector {
-	modoUSB := func() string {
-		p := politica()
-		if p == nil || p.USB.Mode == "" {
-			return string(contract.USBAllow)
-		}
-		return string(p.USB.Mode)
-	}
-
 	// Las carpetas de la politica se vigilan ADEMAS del perfil del usuario.
 	//
 	// `allowed_paths` puede parecer contraintuitivo —¿por que vigilar lo que
@@ -52,20 +44,13 @@ func Default(log zerolog.Logger, politica PoliticaVigente) []Collector {
 		return append(append([]string{}, p.Storage.AllowedPaths...), p.Encryption.ConfidentialPaths...)
 	}
 
-	modoPortapapeles := func() string {
-		p := politica()
-		if p == nil || p.Clipboard.Mode == "" {
-			return string(contract.ClipboardAllow)
-		}
-		return string(p.Clipboard.Mode)
-	}
-
 	return []Collector{
 		NewSessionCollector(log),
 		NewAppsCollector(log),
-		NewUSBCollector(log, modoUSB),
+		NewUSBCollector(log, politica),
 		NewFilesCollector(log, rutasPolitica),
 		NewWebCollector(log),
-		NewClipboardCollector(log, modoPortapapeles),
+		NewClipboardCollector(log, politica),
+		NewPrintCollector(log, politica),
 	}
 }

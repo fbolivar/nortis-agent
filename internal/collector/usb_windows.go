@@ -30,18 +30,21 @@ const IntervaloUSB = 3 * time.Second
 // siempre, aunque el modo sea `allow`. Saber que alguien conecto una memoria un
 // viernes a las siete es informacion aunque en ese momento estuviera permitido.
 type USBCollector struct {
-	log      zerolog.Logger
-	maquina  *maquinaUSB
-	// modo devuelve el modo de enforcement vigente para poder informarlo. Puede
-	// ser nil, en cuyo caso se reporta "allow".
-	modo func() string
+	log     zerolog.Logger
+	maquina *maquinaUSB
+
+	// politica se consulta en cada sondeo, no se copia: el administrador la
+	// cambia en la consola y el agente la recarga en caliente. Un recolector con
+	// una copia seguiria expulsando —o dejando pasar— segun la lista blanca de
+	// hace tres horas.
+	politica func() *contract.Policy
 }
 
-func NewUSBCollector(log zerolog.Logger, modo func() string) *USBCollector {
+func NewUSBCollector(log zerolog.Logger, politica func() *contract.Policy) *USBCollector {
 	return &USBCollector{
-		log:     log.With().Str("recolector", "usb").Logger(),
-		maquina: nuevaMaquinaUSB(),
-		modo:    modo,
+		log:      log.With().Str("recolector", "usb").Logger(),
+		maquina:  nuevaMaquinaUSB(),
+		politica: politica,
 	}
 }
 
@@ -63,25 +66,83 @@ func (c *USBCollector) Run(ctx context.Context, emit Emit) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			for _, e := range c.maquina.observar(c.sondear(), c.enforcement(), time.Now().UTC()) {
-				c.log.Info().
-					Str("serial", stringDe(e.Payload["serial"])).
-					Str("etiqueta", stringDe(e.Payload["label"])).
-					Msg("unidad extraible conectada")
-				emit(e)
-			}
+			c.cicloDeSondeo(emit)
 		}
 	}
 }
 
+func (c *USBCollector) cicloDeSondeo(emit Emit) {
+	vols := c.sondear()
+	modo, listaBlanca := c.reglas()
+
+	// LA EXPULSION VA ANTES DE EMITIR, y solo para dispositivos NUEVOS.
+	//
+	// El orden importa: si se emitiera primero, un dispositivo expulsado
+	// aparecería en el evento con enforcement "block" antes de que el bloqueo
+	// hubiera ocurrido de verdad, y si la expulsion fallara el panel diria que
+	// se bloqueo algo que sigue montado.
+	for _, v := range vols {
+		if !c.debeExpulsarse(v, modo, listaBlanca) {
+			continue
+		}
+		if c.maquina.presentes[v.clave()] {
+			// Ya se intento con este dispositivo. Reintentar cada tres segundos
+			// sobre un disco que no admite expulsion por software seria un bucle
+			// perpetuo contra el hardware del cliente.
+			continue
+		}
+
+		if err := Expulsar(v.Letra); err != nil {
+			c.log.Error().Err(err).
+				Str("unidad", v.Letra).
+				Str("serial", v.SerialEfectivo()).
+				Msg("dispositivo NO autorizado que no se pudo expulsar; el equipo esta expuesto en este canal")
+		} else {
+			c.log.Warn().
+				Str("unidad", v.Letra).
+				Str("serial", v.SerialEfectivo()).
+				Str("etiqueta", v.Etiqueta).
+				Msg("dispositivo no autorizado expulsado")
+		}
+	}
+
+	for _, e := range c.maquina.observar(vols, string(modo), time.Now().UTC()) {
+		c.log.Info().
+			Str("serial", stringDe(e.Payload["serial"])).
+			Str("etiqueta", stringDe(e.Payload["label"])).
+			Msg("unidad extraible conectada")
+		emit(e)
+	}
+}
+
+// debeExpulsarse decide si hay que arrancar el dispositivo del equipo.
+//
+// Solo en modo `block` CON lista blanca. Sin lista blanca el bloqueo lo hace el
+// driver deshabilitado y el volumen ni llega a montarse, asi que no hay nada que
+// expulsar; y en `read_only` el dispositivo se queda, que es justamente lo que
+// ese modo busca — poder leer sin poder escribir.
+func (c *USBCollector) debeExpulsarse(v volumen, modo contract.USBMode, listaBlanca []string) bool {
+	if modo != contract.USBBlock || len(listaBlanca) == 0 {
+		return false
+	}
+	return !AutorizadoEnListaBlanca(v.SerialEfectivo(), listaBlanca)
+}
+
+// reglas devuelve el modo y la lista blanca vigentes.
+func (c *USBCollector) reglas() (contract.USBMode, []string) {
+	if c.politica == nil {
+		return contract.USBAllow, nil
+	}
+	p := c.politica()
+	if p == nil || p.USB.Mode == "" {
+		return contract.USBAllow, nil
+	}
+	return p.USB.Mode, p.USB.SerialAllowlist
+}
+
 func (c *USBCollector) enforcement() string {
-	if c.modo == nil {
-		return string(contract.USBAllow)
-	}
-	if m := c.modo(); m != "" {
-		return m
-	}
-	return string(contract.USBAllow)
+	modo, _ := c.reglas()
+	return string(modo)
 }
 
 func stringDe(v any) string {
