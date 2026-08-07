@@ -1,0 +1,20 @@
+# Finales de linea normalizados a LF en el repositorio y EN LA COPIA DE TRABAJO.
+#
+# Sin esto, un checkout en Windows convierte a CRLF y `gofmt` considera todos los
+# archivos mal formateados: el CI se pone en rojo por algo que en la maquina del
+# desarrollador se ve perfecto. Es exactamente lo que paso aqui, y en un proyecto
+# cuyo objetivo es Windows va a pasar siempre.
+*           text=auto eol=lf
+
+*.go        text eol=lf
+*.mod       text eol=lf
+*.sum       text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+
+# Binarios: git no debe tocarlos nunca.
+*.exe       binary
+*.dll       binary
+*.db        binary
