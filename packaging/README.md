@@ -30,15 +30,22 @@ msiexec /i NortisAgent-0.1.0.msi
 Silencioso, que es como lo hara un administrador por GPO o Intune:
 
 ```powershell
-msiexec /i NortisAgent-0.1.0.msi /qn TOKEN=<token-de-enrolamiento> CONSOLA=https://app.nortis.co
+msiexec /i NortisAgent-0.1.0.msi /qn CLAVE=nrt_live_xxxxx CONSOLA=https://app.nortis.co
 ```
 
-El token se obtiene en la consola, en Endpoints → Enrolar. `TOKEN` esta marcado
-como propiedad oculta: no aparece en los registros de instalacion. Un token en un
-log de MSI acabaria en un ticket de soporte o en un correo, y es una credencial.
+La credencial se crea en la consola, en **Configuracion → API keys**, y empieza
+por `nrt_live_`. La propiedad se llama `CLAVE` para que coincida con lo que el
+administrador ve en pantalla, y esta marcada como oculta: no aparece en los
+registros de instalacion. Un log de MSI acaba en tickets y en correos, y esta
+credencial da de alta endpoints en la organizacion.
 
-Si el token esta caducado la instalacion **no** falla: el binario queda puesto y
-se puede enrolar despues sin volver a desplegar.
+Si la credencial esta revocada o mal copiada la instalacion **no** falla: el
+binario queda puesto y se puede enrolar despues, sin volver a desplegar a todo el
+parque por un error de copiado:
+
+```powershell
+& "$env:ProgramFiles\Nortis\Agent\nortis-agent.exe" enroll -key nrt_live_xxxxx -url https://app.nortis.co
+```
 
 ## Desinstalar
 

@@ -66,19 +66,24 @@
     <!--
       ENROLAMIENTO
       ========================================================================
-      El token llega por linea de comandos:
+      La credencial del tenant llega por linea de comandos:
 
-        msiexec /i NortisAgent.msi /qn TOKEN=xxxxx CONSOLA=https://app.nortis.co
+        msiexec /i NortisAgent.msi /qn CLAVE=nrt_live_xxx CONSOLA=https://app.nortis.co
+
+      Se llama CLAVE y no TOKEN porque eso es lo que es: la credencial de
+      organizacion que se crea en Configuracion -> API keys de la consola, la
+      misma que aparece ahi como `nrt_live_...`. Un nombre que no coincide con lo
+      que el administrador ve en pantalla le hace buscar algo que no existe.
 
       Secure="yes" es necesario para que la propiedad sobreviva al paso al
       contexto elevado en una instalacion silenciosa por GPO. Va en mayusculas
       por lo mismo: las propiedades en minusculas son privadas y no cruzan.
 
-      Hidden="yes" mantiene el token fuera del registro de instalacion. Un log
-      de MSI acaba en tickets de soporte y correos; un token de enrolamiento que
-      viaje ahi es una credencial filtrada.
+      Hidden="yes" la mantiene fuera del registro de instalacion. Un log de MSI
+      acaba en tickets de soporte y en correos; esta credencial da de alta
+      endpoints en la organizacion, asi que ahi seria una credencial filtrada.
     -->
-    <Property Id="TOKEN" Secure="yes" Hidden="yes" />
+    <Property Id="CLAVE" Secure="yes" Hidden="yes" />
     <Property Id="CONSOLA" Secure="yes" Value="https://app.nortis.co" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
@@ -151,11 +156,12 @@
       gaste el primer ciclo fallando la autenticacion.
 
       Impersonate="no" porque escribe en %ProgramData%. Return="ignore" porque
-      un token caducado NO debe abortar la instalacion: el binario queda puesto
-      y el administrador puede enrolar despues sin volver a desplegar.
+      una credencial revocada o mal copiada NO debe abortar la instalacion: el
+      binario queda puesto y se puede enrolar despues, sin volver a desplegar a
+      todo el parque por un error de copiado.
     -->
     <CustomAction Id="EstablecerEnrolar" Property="Enrolar"
-                  Value="&quot;[INSTALLFOLDER]nortis-agent.exe&quot; enroll --token &quot;[TOKEN]&quot; --console &quot;[CONSOLA]&quot;" />
+                  Value="&quot;[INSTALLFOLDER]nortis-agent.exe&quot; enroll -key &quot;[CLAVE]&quot; -url &quot;[CONSOLA]&quot;" />
     <CustomAction Id="Enrolar" BinaryRef="Wix4UtilCA_X64" DllEntry="WixQuietExec64"
                   Execute="deferred" Impersonate="no" Return="ignore" />
 
@@ -180,8 +186,8 @@
                   Execute="deferred" Impersonate="no" Return="ignore" />
 
     <InstallExecuteSequence>
-      <Custom Action="EstablecerEnrolar" Before="Enrolar" Condition="NOT Installed AND TOKEN" />
-      <Custom Action="Enrolar" Before="StartServices" Condition="NOT Installed AND TOKEN" />
+      <Custom Action="EstablecerEnrolar" Before="Enrolar" Condition="NOT Installed AND CLAVE" />
+      <Custom Action="Enrolar" Before="StartServices" Condition="NOT Installed AND CLAVE" />
 
       <Custom Action="EstablecerRevertir" Before="Revertir"
               Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
