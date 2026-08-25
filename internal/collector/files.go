@@ -58,19 +58,19 @@ func (o operacionArchivo) tipoEvento() contract.EventType {
 // materializa ahi: un archivo en la cache de Chrome no es un archivo que alguien
 // se lleve.
 var carpetasIgnoradas = map[string]bool{
-	"appdata":                  true,
-	"temp":                     true,
-	"tmp":                      true,
-	"$recycle.bin":             true,
+	"appdata":                   true,
+	"temp":                      true,
+	"tmp":                       true,
+	"$recycle.bin":              true,
 	"system volume information": true,
-	"windows":                  true,
-	"programdata":              true,
-	"program files":            true,
-	"program files (x86)":      true,
-	"node_modules":             true,
-	".git":                     true,
-	".cache":                   true,
-	"__pycache__":              true,
+	"windows":                   true,
+	"programdata":               true,
+	"program files":             true,
+	"program files (x86)":       true,
+	"node_modules":              true,
+	".git":                      true,
+	".cache":                    true,
+	"__pycache__":               true,
 }
 
 // extensionesIgnoradas son archivos de trabajo intermedios. Nadie exfiltra un
