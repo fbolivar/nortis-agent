@@ -8,6 +8,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -112,7 +113,7 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(6)
+	p.wg.Add(7)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
@@ -125,6 +126,10 @@ func (p *Program) Start(s service.Service) error {
 	// —y no en el proceso del administrador— donde se valida un vale y se afloja.
 	go p.loop(ctx, "proteccion", 30*time.Second, p.proteccionOnce)
 	go p.loop(ctx, "actualizacion", intervaloActualizacion, p.actualizarOnce)
+	// Comandos de la consola (restaurar / borrar cuarentena). Se consultan a
+	// menudo porque una restauracion la pide un humano que espera verla aplicada:
+	// un minuto es la latencia maxima aceptable sin castigar la red del equipo.
+	go p.loop(ctx, "comandos", time.Minute, p.comandosOnce)
 
 	p.arrancarRecolectores(ctx)
 
@@ -144,6 +149,49 @@ func (p *Program) limpiarCuarentenaOnce(_ context.Context) {
 	if n > 0 {
 		p.log.Info().Int("borrados", n).Dur("retencion", enforce.RetencionCuarentena).
 			Msg("cuarentena purgada: evidencia caducada retirada")
+	}
+}
+
+// comandosOnce reclama a la consola los comandos pendientes para este equipo
+// —restaurar un archivo retirado, o borrarlo definitivamente— y los ejecuta. Es
+// el cierre del ciclo de cuarentena: el agente retira, la consola revisa y aqui
+// se cumple la decision del administrador. Reporta el resultado de cada uno para
+// que la consola muestre si se aplico o por que fallo.
+func (p *Program) comandosOnce(ctx context.Context) {
+	resp, err := p.agent.PollComandos(ctx)
+	if err != nil {
+		// Sin endpoint_id todavia, o red caida: se reintenta al proximo ciclo.
+		p.log.Debug().Err(err).Msg("no se pudieron consultar comandos")
+		return
+	}
+	if len(resp.Commands) == 0 {
+		return
+	}
+
+	dir := filepath.Join(agentcfg.Dir(), "cuarentena")
+	for _, cmd := range resp.Commands {
+		var e error
+		switch cmd.Kind {
+		case "restore_file":
+			e = enforce.RestaurarCuarentena(dir, cmd.QuarantineID, cmd.OriginalPath)
+		case "delete_quarantine":
+			e = enforce.BorrarCuarentena(dir, cmd.QuarantineID)
+		default:
+			e = fmt.Errorf("comando desconocido: %s", cmd.Kind)
+		}
+
+		estado, msgErr := "done", ""
+		if e != nil {
+			estado, msgErr = "failed", e.Error()
+			p.log.Warn().Err(e).Str("comando", cmd.Kind).Str("id", cmd.QuarantineID).
+				Msg("no se pudo ejecutar el comando de cuarentena")
+		} else {
+			p.log.Info().Str("comando", cmd.Kind).Str("ruta", cmd.OriginalPath).
+				Msg("comando de cuarentena ejecutado")
+		}
+		if rerr := p.agent.ReportarComando(ctx, cmd.ID, estado, msgErr); rerr != nil {
+			p.log.Warn().Err(rerr).Msg("no se pudo reportar el resultado del comando")
+		}
 	}
 }
 

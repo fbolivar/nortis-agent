@@ -1,11 +1,46 @@
 package enforce
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// RestaurarCuarentena devuelve un archivo retirado a su ruta original. Lo ordena
+// la consola tras revisar el incidente. Recrea la carpeta destino si hiciera
+// falta (pudo borrarse mientras el archivo estaba en cuarentena).
+func RestaurarCuarentena(dirCuarentena, quarantineID, rutaOriginal string) error {
+	if err := validarID(quarantineID); err != nil {
+		return err
+	}
+	origen := filepath.Join(dirCuarentena, quarantineID)
+	if err := os.MkdirAll(filepath.Dir(rutaOriginal), 0o750); err != nil {
+		return err
+	}
+	return os.Rename(origen, rutaOriginal)
+}
+
+// BorrarCuarentena elimina definitivamente un archivo de la cuarentena.
+func BorrarCuarentena(dirCuarentena, quarantineID string) error {
+	if err := validarID(quarantineID); err != nil {
+		return err
+	}
+	return os.Remove(filepath.Join(dirCuarentena, quarantineID))
+}
+
+// validarID rechaza un identificador que no sea un nombre de archivo simple. Es
+// la defensa contra un valor con separadores o ".." que, unido a la carpeta de
+// cuarentena, saldria de ella y tocaria un archivo cualquiera del sistema: la
+// consola encarga la accion, pero el agente no confia ciegamente en la ruta.
+func validarID(quarantineID string) error {
+	if quarantineID == "" || quarantineID != filepath.Base(quarantineID) ||
+		strings.ContainsAny(quarantineID, `/\`) || strings.Contains(quarantineID, "..") {
+		return fmt.Errorf("identificador de cuarentena invalido: %q", quarantineID)
+	}
+	return nil
+}
 
 // RetencionCuarentena es cuanto se conserva un archivo retirado antes de
 // borrarlo. Es la respuesta a "cuanto tiempo y que se hace": se guarda como
