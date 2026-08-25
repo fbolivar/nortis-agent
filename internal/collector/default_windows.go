@@ -3,8 +3,11 @@
 package collector
 
 import (
+	"path/filepath"
+
 	"github.com/rs/zerolog"
 
+	"github.com/fbolivar/nortis-agent/internal/agentcfg"
 	"github.com/fbolivar/nortis-agent/internal/contract"
 )
 
@@ -44,12 +47,23 @@ func Default(log zerolog.Logger, politica PoliticaVigente) []Collector {
 		return append(append([]string{}, p.Storage.AllowedPaths...), p.Encryption.ConfidentialPaths...)
 	}
 
+	// allowed son solo las carpetas permitidas (no las confidenciales): es la
+	// lista contra la que se decide si un documento quedo fuera de sitio.
+	allowed := func() []string {
+		p := politica()
+		if p == nil {
+			return nil
+		}
+		return p.Storage.AllowedPaths
+	}
+	dirCuarentena := filepath.Join(agentcfg.Dir(), "cuarentena")
+
 	return []Collector{
 		NewSessionCollector(log),
 		NewAppsCollector(log),
 		NewUSBCollector(log, politica),
-		NewFilesCollector(log, rutasPolitica),
-		NewWebCollector(log),
+		NewFilesCollector(log, rutasPolitica, allowed, dirCuarentena),
+		NewWebCollector(log, politica),
 		NewClipboardCollector(log, politica),
 		NewPrintCollector(log, politica),
 	}
