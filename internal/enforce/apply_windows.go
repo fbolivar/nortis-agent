@@ -17,7 +17,7 @@ import (
 
 // Rutas del registro que gobiernan el almacenamiento extraible.
 const (
-	claveUSBStor  = `SYSTEM\CurrentControlSet\Services\USBSTOR`
+	claveUSBStor   = `SYSTEM\CurrentControlSet\Services\USBSTOR`
 	claveDirectiva = `SYSTEM\CurrentControlSet\Control\StorageDevicePolicies`
 
 	// 3 = el driver arranca con el sistema; 4 = deshabilitado.
