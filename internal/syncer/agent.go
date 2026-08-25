@@ -320,3 +320,9 @@ func (a *Agent) Quarantined() bool {
 
 // QueueLen expone cuantos eventos esperan.
 func (a *Agent) QueueLen() (int, error) { return a.q.Len() }
+
+// Version consulta la version disponible en la consola. Lo usa el updater; se
+// expone aqui para no filtrar el cliente HTTP fuera del sincronizador.
+func (a *Agent) Version(ctx context.Context) (contract.VersionResponse, error) {
+	return a.client.Version(ctx)
+}

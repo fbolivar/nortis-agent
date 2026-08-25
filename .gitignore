@@ -28,3 +28,7 @@
 *.pfx
 *.p12
 *.snk
+
+# Claves de la consola: la privada jamas se versiona; la publica va por otra via.
+console_privkey.pem
+console_pubkey.pem
