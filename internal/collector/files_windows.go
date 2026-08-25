@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -171,9 +172,7 @@ func (c *FilesCollector) raices() []string {
 					continue
 				}
 				perfil := filepath.Join(usuarios, e.Name())
-				for _, sub := range []string{"Desktop", "Documents", "Downloads"} {
-					añadir(filepath.Join(perfil, sub))
-				}
+				c.carpetasDeDocumentos(perfil, añadir)
 			}
 		}
 	}
@@ -189,6 +188,40 @@ func (c *FilesCollector) raices() []string {
 		}
 	}
 	return out
+}
+
+// carpetasDeDocumentos añade, para un perfil de usuario, las carpetas donde
+// aterrizan sus documentos: Escritorio, Documentos y Descargas.
+//
+// EN MAQUINAS CORPORATIVAS CON ONEDRIVE, estas carpetas suelen estar REDIRIGIDAS
+// (Known Folder Move): el Escritorio real no es C:\Users\x\Desktop sino
+// C:\Users\x\OneDrive - Empresa\Escritorio. Vigilar solo las clasicas dejaria
+// ciega la mitad del equipo. Por eso se recorren tambien las carpetas OneDrive
+// del perfil, en español y en ingles.
+func (c *FilesCollector) carpetasDeDocumentos(perfil string, añadir func(string)) {
+	// Nombres de las carpetas, en los dos idiomas en que Windows las crea.
+	subcarpetas := []string{
+		"Desktop", "Documents", "Downloads",
+		"Escritorio", "Documentos", "Descargas",
+	}
+
+	raicesUsuario := []string{perfil}
+
+	// Cualquier carpeta del perfil que empiece por "OneDrive" es una raiz de
+	// sincronizacion (OneDrive personal, o "OneDrive - <Empresa>").
+	if entradas, err := os.ReadDir(perfil); err == nil {
+		for _, e := range entradas {
+			if e.IsDir() && strings.HasPrefix(strings.ToLower(e.Name()), "onedrive") {
+				raicesUsuario = append(raicesUsuario, filepath.Join(perfil, e.Name()))
+			}
+		}
+	}
+
+	for _, raiz := range raicesUsuario {
+		for _, sub := range subcarpetas {
+			añadir(filepath.Join(raiz, sub))
+		}
+	}
 }
 
 func unidadSistema() string {
@@ -371,13 +404,27 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 				}
 			}
 
+			// DIAGNOSTICO: se registra cada cambio detectado, para poder ver en el
+			// log que el vigilante esta vivo y que rutas ve (util para confirmar,
+			// p. ej., que las carpetas de OneDrive se estan vigilando).
+			c.log.Debug().
+				Str("ruta", cambio.Ruta).Int("operacion", int(cambio.Operacion)).
+				Msg("cambio de archivo detectado")
+
 			if ev, recortado := c.maquina.observar(cambio, ahora); ev != nil {
 				// REMEDIACION: un documento escrito fuera de las carpetas
 				// permitidas se retira a cuarentena. Solo lo que no es un borrado
 				// (el archivo tiene que existir para moverlo) y solo si la regla
 				// aplica —la decision, conservadora, vive en enforce—.
-				if cambio.Operacion != archivoEliminado &&
-					enforce.DebeCuarentenar(cambio.Ruta, c.rutasPermitidas()) {
+				permitidas := c.rutasPermitidas()
+				debe := cambio.Operacion != archivoEliminado &&
+					enforce.DebeCuarentenar(cambio.Ruta, permitidas)
+				c.log.Debug().
+					Str("ruta", cambio.Ruta).
+					Strs("permitidas", permitidas).
+					Bool("cuarentenar", debe).
+					Msg("decision de cuarentena")
+				if debe {
 					if dest, err := enforce.Cuarentenar(cambio.Ruta, c.dirCuarentena); err == nil {
 						ev.Payload["enforcement"] = "quarantine"
 						c.log.Warn().

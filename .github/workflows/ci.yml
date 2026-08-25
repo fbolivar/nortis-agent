@@ -103,8 +103,16 @@ jobs:
         id: version
         shell: pwsh
         run: |
+          # Prioridad: etiqueta v* (release firmado) > archivo VERSION del repo
+          # (builds de rama, sin firma) > 0.0.0.
+          #
+          # El archivo VERSION permite publicar una version instalable desde una
+          # rama sin necesitar etiqueta —y por tanto sin exigir firma— para el
+          # canal de auto-actualizacion. Se sube editando VERSION en el repo.
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $v = $env:GITHUB_REF -replace '^refs/tags/v',''
+          } elseif (Test-Path VERSION) {
+            $v = (Get-Content VERSION -Raw).Trim()
           } else {
             $v = '0.0.0'
           }
