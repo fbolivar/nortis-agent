@@ -202,7 +202,7 @@ func (q *Queue) Dequeue(limit int) ([]Pending, error) {
 	var out []Pending
 	for rows.Next() {
 		var (
-			id                                 int64
+			id                                  int64
 			eventType, occurred, clientID, body string
 		)
 		if err := rows.Scan(&id, &eventType, &occurred, &clientID, &body); err != nil {

@@ -39,6 +39,19 @@ linters:
         - (*database/sql.Tx).Rollback
         - (*github.com/fbolivar/nortis-agent/internal/queue.Queue).Close
         - (golang.org/x/sys/windows/registry.Key).Close
+        # Llamadas a la API de Win32. `.Call` de un LazyProc/Proc devuelve el par
+        # (r1, r2, err) donde `err` es SIEMPRE non-nil (envuelve GetLastError, que
+        # solo importa si r1 indica fallo): comprobarlo como error de Go es un
+        # falso positivo. CloseHandle es un cierre de recurso, como los demas Close.
+        - (*golang.org/x/sys/windows.LazyProc).Call
+        - (*golang.org/x/sys/windows.Proc).Call
+        - golang.org/x/sys/windows.CloseHandle
+        - (golang.org/x/sys/windows.Token).Close
+        # Cierre y borrado de archivos temporales de diagnostico: es limpieza,
+        # como los demas Close. El borrado que SI importa (cuarentena) comprueba
+        # su error explicitamente y no pasa por aqui.
+        - (*os.File).Close
+        - os.Remove
 
   exclusions:
     rules:
@@ -86,6 +99,31 @@ linters:
       # ejecuta un operador de confianza, no del agente. Se acota solo a esa
       # carpeta.
       - path: tools/
+        text: "G304|G306"
+        linters:
+          - gosec
+
+      # El vigilante del portapapeles engancha la API de ventanas de Win32 con
+      # punteros a estructuras nativas (G103), la misma clase de codigo ya
+      # excluida en dpapi y collector.
+      - path: internal/clipwatch/
+        text: "G103|G104"
+        linters:
+          - gosec
+
+      # Los colectores lanzan el proceso auxiliar en la sesion del usuario con la
+      # ruta del propio ejecutable (G204) y leen archivos por rutas que reporta el
+      # sistema de archivos, no una entrada de usuario (G304). Son inherentes a
+      # integrar con Windows; la decision de QUE se reporta es codigo puro probado.
+      - path: internal/collector/
+        text: "G104|G204|G304"
+        linters:
+          - gosec
+
+      # El aplicador de politica lee rutas del sistema (G304) y escribe el archivo
+      # hosts, que DEBE quedar legible para todos para que la resolucion de
+      # nombres lo use (G306): 0600 romperia el bloqueo de dominios.
+      - path: internal/enforce/
         text: "G304|G306"
         linters:
           - gosec

@@ -13,10 +13,10 @@ import (
 // Codigos de control para desmontar y expulsar un volumen. No estan en
 // x/sys/windows y se calculan con la macro CTL_CODE de Windows.
 const (
-	fsctlLockVolume            = 0x00090018
-	fsctlDismountVolume        = 0x00090020
-	ioctlStorageMediaRemoval   = 0x002D4804
-	ioctlStorageEjectMedia     = 0x002D4808
+	fsctlLockVolume          = 0x00090018
+	fsctlDismountVolume      = 0x00090020
+	ioctlStorageMediaRemoval = 0x002D4804
+	ioctlStorageEjectMedia   = 0x002D4808
 )
 
 // preventMediaRemoval es el parametro de IOCTL_STORAGE_MEDIA_REMOVAL.

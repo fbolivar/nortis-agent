@@ -36,39 +36,39 @@ import (
 // copiado, el producto pasa de probar movimientos de informacion a almacenarla,
 // y deja de ser defendible ante el trabajador vigilado.
 type Aviso struct {
-	AplicacionOrigen string    `json:"source_app"`
-	Bytes            int64     `json:"bytes"`
-	Formato          string    `json:"format"`
+	AplicacionOrigen string `json:"source_app"`
+	Bytes            int64  `json:"bytes"`
+	Formato          string `json:"format"`
 	// Enforcement es lo que el agente HIZO de verdad, no lo que la politica
 	// pedia. Si el vaciado se intento y fallo, aqui pone "alert": un incidente
 	// que diga "bloqueado" sobre contenido que sigue en el portapapeles es peor
 	// que uno que admita que solo se alerto.
-	Enforcement string `json:"enforcement"`
-	Usuario     string `json:"user"`
-	Momento          time.Time `json:"at"`
+	Enforcement string    `json:"enforcement"`
+	Usuario     string    `json:"user"`
+	Momento     time.Time `json:"at"`
 }
 
 /* -------------------------------------------------- API de Windows --- */
 
 var (
-	user32                        = windows.NewLazySystemDLL("user32.dll")
-	procAddClipboardFormatListener = user32.NewProc("AddClipboardFormatListener")
+	user32                            = windows.NewLazySystemDLL("user32.dll")
+	procAddClipboardFormatListener    = user32.NewProc("AddClipboardFormatListener")
 	procRemoveClipboardFormatListener = user32.NewProc("RemoveClipboardFormatListener")
-	procCreateWindowExW           = user32.NewProc("CreateWindowExW")
-	procDestroyWindow             = user32.NewProc("DestroyWindow")
-	procDefWindowProcW            = user32.NewProc("DefWindowProcW")
-	procRegisterClassExW          = user32.NewProc("RegisterClassExW")
-	procGetMessageW               = user32.NewProc("GetMessageW")
-	procTranslateMessage          = user32.NewProc("TranslateMessage")
-	procDispatchMessageW          = user32.NewProc("DispatchMessageW")
-	procPostQuitMessage           = user32.NewProc("PostQuitMessage")
-	procGetClipboardOwner         = user32.NewProc("GetClipboardOwner")
-	procGetWindowThreadProcessId  = user32.NewProc("GetWindowThreadProcessId")
-	procOpenClipboard             = user32.NewProc("OpenClipboard")
-	procCloseClipboard            = user32.NewProc("CloseClipboard")
-	procGetClipboardData          = user32.NewProc("GetClipboardData")
-	procEmptyClipboard            = user32.NewProc("EmptyClipboard")
-	procIsClipboardFormatAvailable = user32.NewProc("IsClipboardFormatAvailable")
+	procCreateWindowExW               = user32.NewProc("CreateWindowExW")
+	procDestroyWindow                 = user32.NewProc("DestroyWindow")
+	procDefWindowProcW                = user32.NewProc("DefWindowProcW")
+	procRegisterClassExW              = user32.NewProc("RegisterClassExW")
+	procGetMessageW                   = user32.NewProc("GetMessageW")
+	procTranslateMessage              = user32.NewProc("TranslateMessage")
+	procDispatchMessageW              = user32.NewProc("DispatchMessageW")
+	procPostQuitMessage               = user32.NewProc("PostQuitMessage")
+	procGetClipboardOwner             = user32.NewProc("GetClipboardOwner")
+	procGetWindowThreadProcessId      = user32.NewProc("GetWindowThreadProcessId")
+	procOpenClipboard                 = user32.NewProc("OpenClipboard")
+	procCloseClipboard                = user32.NewProc("CloseClipboard")
+	procGetClipboardData              = user32.NewProc("GetClipboardData")
+	procEmptyClipboard                = user32.NewProc("EmptyClipboard")
+	procIsClipboardFormatAvailable    = user32.NewProc("IsClipboardFormatAvailable")
 
 	kernel32       = windows.NewLazySystemDLL("kernel32.dll")
 	procGlobalSize = kernel32.NewProc("GlobalSize")
@@ -79,10 +79,10 @@ const (
 	wmDestroy         = 0x0002
 	hwndMessage       = ^uintptr(2) // HWND_MESSAGE == -3
 
-	cfText         = 1
-	cfBitmap       = 2
-	cfUnicodeText  = 13
-	cfHDrop        = 15
+	cfText        = 1
+	cfBitmap      = 2
+	cfUnicodeText = 13
+	cfHDrop       = 15
 )
 
 type wndClassExW struct {

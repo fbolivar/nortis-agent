@@ -279,8 +279,8 @@ const (
 )
 
 type storagePropertyQuery struct {
-	PropertyId uint32
-	QueryType  uint32
+	PropertyId           uint32
+	QueryType            uint32
 	AdditionalParameters [1]byte
 }
 

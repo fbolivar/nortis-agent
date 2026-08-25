@@ -165,12 +165,12 @@ func (c *PrintCollector) limpiar(ahora time.Time) {
 /* ------------------------------------------------- API del spooler --- */
 
 var (
-	winspool                = windows.NewLazySystemDLL("winspool.drv")
-	procEnumPrintersW       = winspool.NewProc("EnumPrintersW")
-	procOpenPrinterW        = winspool.NewProc("OpenPrinterW")
-	procClosePrinter        = winspool.NewProc("ClosePrinter")
-	procEnumJobsW           = winspool.NewProc("EnumJobsW")
-	procSetJobW             = winspool.NewProc("SetJobW")
+	winspool          = windows.NewLazySystemDLL("winspool.drv")
+	procEnumPrintersW = winspool.NewProc("EnumPrintersW")
+	procOpenPrinterW  = winspool.NewProc("OpenPrinterW")
+	procClosePrinter  = winspool.NewProc("ClosePrinter")
+	procEnumJobsW     = winspool.NewProc("EnumJobsW")
+	procSetJobW       = winspool.NewProc("SetJobW")
 )
 
 const (
@@ -180,27 +180,27 @@ const (
 )
 
 type printerInfo2 struct {
-	ServerName      *uint16
-	PrinterName     *uint16
-	ShareName       *uint16
-	PortName        *uint16
-	DriverName      *uint16
-	Comment         *uint16
-	Location        *uint16
-	DevMode         uintptr
-	SepFile         *uint16
-	PrintProcessor  *uint16
-	Datatype        *uint16
-	Parameters      *uint16
+	ServerName         *uint16
+	PrinterName        *uint16
+	ShareName          *uint16
+	PortName           *uint16
+	DriverName         *uint16
+	Comment            *uint16
+	Location           *uint16
+	DevMode            uintptr
+	SepFile            *uint16
+	PrintProcessor     *uint16
+	Datatype           *uint16
+	Parameters         *uint16
 	SecurityDescriptor uintptr
-	Attributes      uint32
-	Priority        uint32
-	DefaultPriority uint32
-	StartTime       uint32
-	UntilTime       uint32
-	Status          uint32
-	Jobs            uint32
-	AveragePPM      uint32
+	Attributes         uint32
+	Priority           uint32
+	DefaultPriority    uint32
+	StartTime          uint32
+	UntilTime          uint32
+	Status             uint32
+	Jobs               uint32
+	AveragePPM         uint32
 }
 
 type jobInfo1 struct {
