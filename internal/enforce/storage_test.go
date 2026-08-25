@@ -1,6 +1,11 @@
 package enforce
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
 
 func TestDebeCuarentenar(t *testing.T) {
 	permitidas := []string{`C:\Operaciones`}
@@ -48,5 +53,47 @@ func TestBajoAlgunaNormaliza(t *testing.T) {
 	// a "C:\Operaciones".
 	if BajoAlguna(`C:\Operaciones\a.txt`, []string{`C:\Oper`}) {
 		t.Fatal("un prefijo que no es frontera de carpeta no debe contar como dentro")
+	}
+}
+
+func TestPurgarCuarentena(t *testing.T) {
+	dir := t.TempDir()
+	ahora := time.Now()
+
+	escribir := func(nombre string, edad time.Duration) string {
+		ruta := filepath.Join(dir, nombre)
+		if err := os.WriteFile(ruta, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		mt := ahora.Add(-edad)
+		if err := os.Chtimes(ruta, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+		return ruta
+	}
+
+	viejo := escribir("viejo.docx", 40*24*time.Hour)     // supera la retencion
+	reciente := escribir("reciente.pdf", 2*24*time.Hour) // dentro de la retencion
+
+	n, err := PurgarCuarentena(dir, RetencionCuarentena, ahora)
+	if err != nil {
+		t.Fatalf("PurgarCuarentena: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("debia purgar 1 archivo, purgo %d", n)
+	}
+	if _, err := os.Stat(viejo); !os.IsNotExist(err) {
+		t.Error("el archivo viejo debia borrarse")
+	}
+	if _, err := os.Stat(reciente); err != nil {
+		t.Error("el archivo reciente NO debia borrarse")
+	}
+}
+
+func TestPurgarCuarentenaSinCarpeta(t *testing.T) {
+	// Carpeta inexistente: no es error, simplemente no hay nada que purgar.
+	n, err := PurgarCuarentena(filepath.Join(t.TempDir(), "no-existe"), RetencionCuarentena, time.Now())
+	if err != nil || n != 0 {
+		t.Fatalf("carpeta inexistente: quiero (0, nil), tengo (%d, %v)", n, err)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -111,10 +112,14 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(5)
+	p.wg.Add(6)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
+	// Purga de la cuarentena una vez al dia: retira la evidencia que ya cumplio
+	// su retencion para que la carpeta no crezca sin fin. La primera pasada es al
+	// arrancar, asi que un equipo que estuvo apagado se pone al dia enseguida.
+	go p.loop(ctx, "limpieza-cuarentena", 24*time.Hour, p.limpiarCuarentenaOnce)
 	// El ciclo de proteccion corre como SYSTEM (el servicio): es el unico
 	// contexto con permiso para reescribir el DACL endurecido, y por eso es aqui
 	// —y no en el proceso del administrador— donde se valida un vale y se afloja.
@@ -124,6 +129,22 @@ func (p *Program) Start(s service.Service) error {
 	p.arrancarRecolectores(ctx)
 
 	return nil
+}
+
+// limpiarCuarentenaOnce purga los archivos en cuarentena que ya cumplieron su
+// retencion. Es el "que se hace" con lo retirado: se conserva un tiempo como
+// evidencia y luego se borra, para no llenar el disco del equipo.
+func (p *Program) limpiarCuarentenaOnce(_ context.Context) {
+	dir := filepath.Join(agentcfg.Dir(), "cuarentena")
+	n, err := enforce.PurgarCuarentena(dir, enforce.RetencionCuarentena, time.Now())
+	if err != nil {
+		p.log.Warn().Err(err).Msg("no se pudo purgar la cuarentena")
+		return
+	}
+	if n > 0 {
+		p.log.Info().Int("borrados", n).Dur("retencion", enforce.RetencionCuarentena).
+			Msg("cuarentena purgada: evidencia caducada retirada")
+	}
 }
 
 // actualizarOnce pregunta a la consola si hay version nueva y, si la hay y es

@@ -1,9 +1,49 @@
 package enforce
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// RetencionCuarentena es cuanto se conserva un archivo retirado antes de
+// borrarlo. Es la respuesta a "cuanto tiempo y que se hace": se guarda como
+// evidencia un tiempo razonable —por si hubo que revisarlo o restaurarlo— y
+// luego se purga, para que la cuarentena no crezca sin fin en el disco del
+// equipo. 30 dias cubre el ciclo de revision de un incidente sin acumular.
+const RetencionCuarentena = 30 * 24 * time.Hour
+
+// PurgarCuarentena borra de la carpeta de cuarentena los archivos cuya ultima
+// modificacion es anterior a `retencion`. Devuelve cuantos borro. Tolera que la
+// carpeta aun no exista (nunca se cuarentenó nada).
+func PurgarCuarentena(dir string, retencion time.Duration, ahora time.Time) (int, error) {
+	entradas, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+
+	limite := ahora.Add(-retencion)
+	borrados := 0
+	for _, e := range entradas {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(limite) {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err == nil {
+				borrados++
+			}
+		}
+	}
+	return borrados, nil
+}
 
 // La regla de almacenamiento en modo usuario: DETECTAR y RETIRAR un archivo
 // guardado fuera de las carpetas permitidas. No es prevencion real —para eso
