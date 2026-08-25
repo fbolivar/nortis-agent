@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"sort"
@@ -120,20 +122,49 @@ func (c *ClipboardCollector) observarAqui(ctx context.Context, emit Emit) {
 // hay usuario al que adjuntarse— generaria un bucle de creacion de procesos.
 const IntervaloReintentoAuxiliar = 20 * time.Second
 
+// IntervaloSinSesion es el reintento cuando NO hay sesion interactiva accesible
+// (un servidor, una sesion RDP sin consola, la pantalla de bloqueo). Ahi el fallo
+// no es transitorio: no tiene sentido insistir cada 20 s ni ensuciar el log; se
+// espacia y se comprueba de tanto en tanto por si aparece un usuario.
+const IntervaloSinSesion = 3 * time.Minute
+
+// errSinSesion marca que no hay sesion de usuario a la que adjuntar el auxiliar.
+// Se distingue de un fallo del propio auxiliar para no tratar igual "no hay nadie
+// delante" (normal, permanente en un servidor) que "el auxiliar reventó".
+var errSinSesion = errors.New("sin sesion interactiva accesible")
+
 func (c *ClipboardCollector) supervisarAuxiliar(ctx context.Context, emit Emit) {
+	avisadoSinSesion := false
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
+		espera := IntervaloReintentoAuxiliar
+
 		if err := c.lanzarYLeer(ctx, emit); err != nil && ctx.Err() == nil {
-			c.log.Debug().Err(err).Msg("el auxiliar del portapapeles termino; se reintenta")
+			if errors.Is(err, errSinSesion) {
+				// No hay usuario delante: en un servidor o una sesion RDP sin
+				// consola esto es permanente. Se espacia el reintento y se avisa
+				// UNA sola vez, no en cada ciclo —lo que llenaba el log—.
+				if !avisadoSinSesion {
+					c.log.Info().Msg("sin sesion interactiva accesible; el portapapeles se observara cuando haya un usuario en la consola")
+					avisadoSinSesion = true
+				}
+				espera = IntervaloSinSesion
+			} else {
+				c.log.Debug().Err(err).Msg("el auxiliar del portapapeles termino; se reintenta")
+				avisadoSinSesion = false
+			}
+		} else {
+			avisadoSinSesion = false
 		}
 
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(IntervaloReintentoAuxiliar):
+		case <-time.After(espera):
 		}
 	}
 }
@@ -142,8 +173,9 @@ func (c *ClipboardCollector) lanzarYLeer(ctx context.Context, emit Emit) error {
 	token, err := tokenDeSesionActiva()
 	if err != nil {
 		// Normal en la pantalla de bloqueo o sin nadie con sesion iniciada: no
-		// hay usuario al que adjuntarse todavia.
-		return err
+		// hay usuario al que adjuntarse todavia. Se envuelve en errSinSesion para
+		// que el supervisor lo espacie en vez de reintentar cada 20 s.
+		return fmt.Errorf("%w: %w", errSinSesion, err)
 	}
 	defer token.Close()
 
