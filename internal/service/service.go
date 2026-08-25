@@ -8,6 +8,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -23,7 +24,15 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
 	"github.com/fbolivar/nortis-agent/internal/tamper"
+	"github.com/fbolivar/nortis-agent/internal/updater"
 )
+
+// intervaloActualizacion es cada cuanto el agente pregunta a la consola si hay
+// una version nueva. La primera pasada es inmediata al arrancar, asi que una
+// version recien instalada comprueba enseguida; despues, cada hora basta —
+// publicar una actualizacion no es urgente al segundo, y el latido ya lleva el
+// pulso del equipo.
+const intervaloActualizacion = time.Hour
 
 // ventanaDesbloqueo es cuanto tiempo, tras validar un vale, el servicio se
 // abstiene de volver a endurecer. Es la ventana en la que el tecnico ejecuta la
@@ -56,6 +65,9 @@ type Program struct {
 	// Es lo unico del agente que MODIFICA el equipo en vez de observarlo.
 	aplicador *enforce.Aplicador
 
+	// actualizador comprueba y aplica versiones nuevas publicadas en la consola.
+	actualizador *updater.Updater
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	cfg    agentcfg.Config
@@ -72,6 +84,12 @@ func NewProgram(cfg agentcfg.Config, agent *syncer.Agent, log zerolog.Logger) *P
 		log:       log,
 		cfg:       cfg,
 		aplicador: enforce.NuevoAplicador(log, agentcfg.Dir()),
+		// El cliente de descarga da margen amplio: un MSI de varios MB por una
+		// red de oficina saturada no debe cortarse a mitad.
+		actualizador: updater.New(
+			agent.Version, contract.AgentVersion,
+			&http.Client{Timeout: 10 * time.Minute}, log,
+		),
 	}
 }
 
@@ -93,7 +111,7 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(4)
+	p.wg.Add(5)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
@@ -101,10 +119,26 @@ func (p *Program) Start(s service.Service) error {
 	// contexto con permiso para reescribir el DACL endurecido, y por eso es aqui
 	// —y no en el proceso del administrador— donde se valida un vale y se afloja.
 	go p.loop(ctx, "proteccion", 30*time.Second, p.proteccionOnce)
+	go p.loop(ctx, "actualizacion", intervaloActualizacion, p.actualizarOnce)
 
 	p.arrancarRecolectores(ctx)
 
 	return nil
+}
+
+// actualizarOnce pregunta a la consola si hay version nueva y, si la hay y es
+// verificable, la aplica. Si la aplica, el proceso sera reemplazado por el
+// instalador; hasta entonces el resto del agente sigue funcionando.
+func (p *Program) actualizarOnce(ctx context.Context) {
+	aplicada, err := p.actualizador.Comprobar(ctx)
+	switch {
+	case err != nil:
+		// No es fatal: un fallo de red o una descarga interrumpida se reintenta en
+		// el proximo ciclo. La telemetria y el enforcement no dependen de esto.
+		p.log.Warn().Err(err).Msg("no se pudo comprobar/aplicar la actualizacion")
+	case aplicada:
+		p.log.Warn().Msg("actualizacion lanzada; el servicio se reiniciara con la version nueva")
+	}
 }
 
 // proteccionOnce reafirma el endurecimiento y atiende una peticion de desbloqueo.
