@@ -326,3 +326,19 @@ func (a *Agent) QueueLen() (int, error) { return a.q.Len() }
 func (a *Agent) Version(ctx context.Context) (contract.VersionResponse, error) {
 	return a.client.Version(ctx)
 }
+
+// PollComandos y ReportarComando exponen el canal de comandos al servicio, que es
+// quien los ejecuta (mover archivos), para no meter operaciones de disco en el
+// sincronizador.
+func (a *Agent) PollComandos(ctx context.Context) (contract.PollComandosResponse, error) {
+	if a.endpointID == "" {
+		return contract.PollComandosResponse{}, nil
+	}
+	return a.client.PollComandos(ctx, a.endpointID)
+}
+
+func (a *Agent) ReportarComando(ctx context.Context, id, status, msgErr string) error {
+	return a.client.ReportarComando(ctx, contract.ReportarComandoRequest{
+		EndpointID: a.endpointID, CommandID: id, Status: status, Error: msgErr,
+	})
+}
