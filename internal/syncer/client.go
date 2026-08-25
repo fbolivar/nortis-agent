@@ -303,3 +303,20 @@ func (c *Client) Version(ctx context.Context) (contract.VersionResponse, error) 
 	}
 	return out, json.Unmarshal(body, &out)
 }
+
+// PollComandos reclama los comandos pendientes del equipo. El servidor los marca
+// enviados al devolverlos.
+func (c *Client) PollComandos(ctx context.Context, endpointID string) (contract.PollComandosResponse, error) {
+	var out contract.PollComandosResponse
+	err := c.post(ctx, "/api/agent/commands", c.endpointCredential(),
+		contract.PollComandosRequest{EndpointID: endpointID}, &out)
+	return out, err
+}
+
+// ReportarComando informa el resultado de ejecutar un comando.
+func (c *Client) ReportarComando(ctx context.Context, req contract.ReportarComandoRequest) error {
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	return c.post(ctx, "/api/agent/commands/result", c.endpointCredential(), req, &out)
+}

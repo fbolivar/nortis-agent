@@ -267,3 +267,31 @@ const (
 	PrintingLog   PrintingMode = "log"
 	PrintingBlock PrintingMode = "block"
 )
+
+// --- Canal de comandos consola -> agente (restauracion de cuarentena) ---
+
+// PollComandosRequest pide los comandos pendientes de este equipo.
+type PollComandosRequest struct {
+	EndpointID string `json:"endpoint_id"`
+}
+
+// Comando es una accion que la consola encarga al agente.
+type Comando struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"` // restore_file | delete_quarantine
+	QuarantineID string `json:"quarantine_id"`
+	OriginalPath string `json:"original_path"`
+}
+
+// PollComandosResponse es la lista de comandos pendientes.
+type PollComandosResponse struct {
+	Commands []Comando `json:"commands"`
+}
+
+// ReportarComandoRequest informa el resultado de ejecutar un comando.
+type ReportarComandoRequest struct {
+	EndpointID string `json:"endpoint_id"`
+	CommandID  string `json:"command_id"`
+	Status     string `json:"status"` // done | failed
+	Error      string `json:"error,omitempty"`
+}

@@ -427,6 +427,11 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 				if debe {
 					if dest, err := enforce.Cuarentenar(cambio.Ruta, c.dirCuarentena); err == nil {
 						ev.Payload["enforcement"] = "quarantine"
+						// quarantine_id es el nombre del archivo dentro de la carpeta
+						// de cuarentena. Es lo que la consola necesita para poder
+						// mandar despues "restaura esto" o "borralo": identifica el
+						// archivo retirado sin revelar su contenido.
+						ev.Payload["quarantine_id"] = filepath.Base(dest)
 						c.log.Warn().
 							Str("ruta", cambio.Ruta).Str("cuarentena", dest).
 							Msg("documento fuera de carpeta permitida: retirado a cuarentena")
