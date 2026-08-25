@@ -69,6 +69,27 @@ linters:
         linters:
           - gosec
 
+      # El paquete tamper lee la clave PUBLICA de la consola de una ruta fija
+      # bajo el directorio de datos del agente (%ProgramData%\Nortis\Agent), no
+      # de una entrada de usuario. G304 marca que la ruta se compone con una
+      # variable —el directorio base—, pero ese directorio lo fija el agente, no
+      # nadie de fuera. Acotado al paquete, donde la unica lectura es esa.
+      - path: internal/tamper/
+        text: "G304"
+        linters:
+          - gosec
+
+      # La herramienta de operaciones (tools/, NO se despliega en los equipos)
+      # lee una ruta de clave privada que le indica el operador (G304) y escribe
+      # la clave PUBLICA con permiso de lectura general (G306) — es publica a
+      # proposito. Las dos "señales" son el comportamiento correcto de un CLI que
+      # ejecuta un operador de confianza, no del agente. Se acota solo a esa
+      # carpeta.
+      - path: tools/
+        text: "G304|G306"
+        linters:
+          - gosec
+
 formatters:
   enable:
     - gofmt

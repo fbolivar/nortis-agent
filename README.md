@@ -81,6 +81,54 @@ telemetría de toda la organización.
 **Reinstalar el agente no saca un equipo de cuarentena** ni lo duplica en el
 inventario: la identidad es la huella de máquina derivada del `MachineGuid`.
 
+## Protección anti-manipulación
+
+El modelo es **resistencia con autorización**, no "imposible de eliminar". Nada
+legítimo es irreversible: un agente que ni el administrador ni el propio IT
+pueden quitar es un rootkit, lo pone en cuarentena el antivirus, y si falla deja
+el equipo inservible. Lo que se impone es más fuerte de lo que parece y sigue
+siendo recuperable.
+
+- **El usuario sin privilegios no puede tocarlo.** Un DACL restrictivo en el
+  objeto de servicio le niega detener, pausar, reconfigurar y borrar; otro en el
+  directorio de datos le niega borrar la cola de eventos o la credencial. Lo
+  impone Windows, no un vigilante en espacio de usuario que se pueda matar.
+- **El administrador tampoco puede, por sí solo.** En el estado endurecido, ni
+  los administradores conservan permiso de parada o borrado: solo SYSTEM. Quitar
+  el agente exige un **vale de desinstalación** firmado por la consola, ligado a
+  ese `endpoint_id` y con caducidad. Un vale robado de un equipo no vale en otro.
+- **Interbloqueo de seguridad.** El agente se NIEGA a endurecer si no hay una
+  clave pública de consola configurada (`console_pubkey.pem`). Sin vía de
+  desbloqueo no se endurece: así nunca se construye por accidente el equipo sin
+  salida. Es `internal/tamper/tamper.go` → `ErrSinClaveConsola`.
+- **El servicio (SYSTEM) es quien afloja**, tras revalidar el vale, porque es el
+  único con permiso para reescribir el DACL. El administrador deja el vale con
+  `nortis-agent unlock -token …`; poder dejar el archivo no da autoridad, la
+  firma de la consola sí.
+
+```powershell
+nortis-agent tamper-status              # ¿está endurecido? ¿hay clave de consola?
+nortis-agent lock                        # forzar el endurecimiento
+nortis-agent unlock -token <vale>        # autorizar la desinstalación
+nortis-agent uninstall                   # dentro de la ventana de 10 min
+```
+
+La clave de la autoridad de desbloqueo se genera con la herramienta de
+operaciones, que **no se despliega** en los equipos y guarda la clave privada
+fuera del agente:
+
+```powershell
+go run ./tools/uninstall-token keygen -out .
+# -> console_pubkey.pem  (va al agente)   console_privkey.pem (SECRETO, custodia)
+go run ./tools/uninstall-token sign -endpoint <endpoint_id> -priv console_privkey.pem
+```
+
+> **Pendiente (consola).** La emisión de vales vivirá en la consola: un endpoint
+> que, con la sesión de un admin, firme un vale para un `endpoint_id` con la
+> clave privada bajo custodia. El formato del vale ya es el que valida el agente;
+> falta el lado servidor y la UI. Hasta entonces se emiten con la herramienta de
+> operaciones.
+
 ## Contratos
 
 Los tipos de `internal/contract` son el espejo en Go de lo que la consola declara
