@@ -29,6 +29,7 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/contract"
 	"github.com/fbolivar/nortis-agent/internal/enforce"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
+	"github.com/fbolivar/nortis-agent/internal/notify"
 	"github.com/fbolivar/nortis-agent/internal/queue"
 	svc "github.com/fbolivar/nortis-agent/internal/service"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
@@ -57,6 +58,11 @@ func main() {
 		// Verbo interno: lo lanza el servicio DENTRO de la sesion del usuario.
 		// No es para uso manual y por eso no aparece en la ayuda.
 		err = cmdClipboardWatch(os.Args[2:])
+	case "notify":
+		// Verbo interno: lo lanza el servicio en la sesion del usuario para
+		// mostrar un aviso corporativo (p. ej. un dominio bloqueado). No es para
+		// uso manual y por eso no aparece en la ayuda.
+		err = cmdNotify(os.Args[2:])
 	case "revert":
 		err = cmdRevert()
 	case "lock":
@@ -628,4 +634,16 @@ func cmdClipboardWatch(args []string) error {
 		Modo:              *modo,
 		FuentesProtegidas: fuentes,
 	})
+}
+
+// cmdNotify muestra un aviso en pantalla. Lo invoca el servicio dentro de la
+// sesion del usuario; no esta pensado para uso manual.
+func cmdNotify(args []string) error {
+	fs := flag.NewFlagSet("notify", flag.ExitOnError)
+	titulo := fs.String("title", "Nortis", "titulo del aviso")
+	mensaje := fs.String("message", "", "cuerpo del aviso")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return notify.Mostrar(*titulo, *mensaje)
 }

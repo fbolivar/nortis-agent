@@ -25,7 +25,7 @@ import "time"
 // El valor de aqui es solo el de una compilacion de desarrollo. 0.0.0 y no un
 // numero que parezca real: si algun dia llega a produccion sin sellar, tiene que
 // cantar en el panel en vez de pasar por una version legitima.
-var AgentVersion = "0.0.0-dev"
+var AgentVersion = "1.0.0"
 
 // PolicySchemaVersion es la version del contrato de politica que este agente
 // SABE aplicar.

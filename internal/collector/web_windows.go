@@ -8,11 +8,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sys/windows"
 	_ "modernc.org/sqlite"
+
+	"github.com/fbolivar/nortis-agent/internal/contract"
 )
 
 // IntervaloWeb es cada cuanto se revisa el historial.
@@ -53,15 +58,23 @@ type WebCollector struct {
 	log     zerolog.Logger
 	maquina *maquinaWeb
 
+	// politica da acceso a la politica vigente, para saber que dominios estan
+	// bloqueados y avisar al usuario cuando visite uno.
+	politica PoliticaVigente
+
 	// marca es, por archivo de historial, la ultima visita ya reportada.
 	marca map[string]time.Time
+	// notificados evita repetir el aviso del mismo dominio en cada ciclo.
+	notificados map[string]time.Time
 }
 
-func NewWebCollector(log zerolog.Logger) *WebCollector {
+func NewWebCollector(log zerolog.Logger, politica PoliticaVigente) *WebCollector {
 	return &WebCollector{
-		log:     log.With().Str("recolector", "web").Logger(),
-		maquina: nuevaMaquinaWeb(),
-		marca:   map[string]time.Time{},
+		log:         log.With().Str("recolector", "web").Logger(),
+		maquina:     nuevaMaquinaWeb(),
+		politica:    politica,
+		marca:       map[string]time.Time{},
+		notificados: map[string]time.Time{},
 	}
 }
 
@@ -122,7 +135,22 @@ func (c *WebCollector) revisar(ctx context.Context, emit Emit, inicio time.Time)
 			}
 		}
 
+		var pol *contract.Policy
+		if c.politica != nil {
+			pol = c.politica()
+		}
+
 		for _, e := range c.maquina.observar(visitas, time.Now().UTC()) {
+			// Si el dominio esta bloqueado por la politica, se marca el evento y
+			// se avisa al usuario con un mensaje corporativo. El bloqueo en si lo
+			// aplica el enforcement (archivo hosts); esto lo hace VISIBLE en vez
+			// de dejar al usuario ante un error de navegador sin explicacion.
+			if dom, _ := e.Payload["domain"].(string); dom != "" {
+				if bloq, motivo := DominioBloqueado(dom, pol); bloq {
+					e.Payload["blocked"] = true
+					c.notificarBloqueo(dom, motivo)
+				}
+			}
 			emit(e)
 		}
 	}
@@ -265,4 +293,45 @@ func copiarArchivo(origen, destino string) error {
 
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// notificarBloqueo muestra al usuario, en SU sesion, un aviso de que el dominio
+// esta bloqueado. Deduplica por dominio para no repetir el mismo aviso en cada
+// ciclo, y no hace nada si no hay nadie con sesion interactiva delante.
+func (c *WebCollector) notificarBloqueo(dominio, motivo string) {
+	ahora := time.Now()
+	if t, ok := c.notificados[dominio]; ok && ahora.Sub(t) < VentanaRepeticionWeb {
+		return
+	}
+	c.notificados[dominio] = ahora
+
+	token, err := tokenDeSesionActiva()
+	if err != nil {
+		// Nadie con sesion interactiva (arranque, o servidor sin usuario): no hay
+		// a quien avisar. No es un error.
+		return
+	}
+	defer token.Close()
+
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+
+	titulo := "Nortis - Acceso bloqueado"
+	mensaje := fmt.Sprintf("El sitio %s esta %s.\n\nSi cree que es un error, contacte con el area de seguridad.", dominio, motivo)
+
+	cmd := exec.Command(exe, "notify", "-title", titulo, "-message", mensaje)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Token:         syscall.Token(token),
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NO_WINDOW,
+	}
+	if err := cmd.Start(); err != nil {
+		c.log.Debug().Err(err).Str("dominio", dominio).Msg("no se pudo mostrar el aviso de bloqueo")
+		return
+	}
+	// No se espera: el aviso vive en la sesion del usuario hasta que lo cierre.
+	// Se libera el proceso hijo en segundo plano para no dejar zombis.
+	go func() { _ = cmd.Wait() }()
 }

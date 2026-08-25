@@ -12,6 +12,8 @@ import (
 
 	"github.com/rs/zerolog"
 	"golang.org/x/sys/windows"
+
+	"github.com/fbolivar/nortis-agent/internal/enforce"
 )
 
 // FilesCollector vigila la creacion, modificacion y borrado de archivos.
@@ -20,7 +22,7 @@ import (
 // extension prohibida. Sin este recolector esas reglas nunca disparan y la
 // mitad del valor del producto no existe.
 //
-// QUE SE VIGILA Y POR QUE NO TODO EL DISCO
+// # QUE SE VIGILA Y POR QUE NO TODO EL DISCO
 //
 // Vigilar C:\ entero es tecnicamente trivial y operativamente ruinoso: Windows
 // escribe permanentemente en sus propias carpetas y el agente pasaria el dia
@@ -28,10 +30,13 @@ import (
 // aterriza la informacion de una persona —escritorio, documentos, descargas— y
 // las unidades extraibles, que es por donde sale.
 //
-// LIMITACION QUE HAY QUE TENER PRESENTE: esto DETECTA, no PREVIENE. Impedir un
-// guardado exige un driver de tipo minifilter en modo kernel; desde modo usuario
-// solo se puede saber que ocurrio, despues. El editor de politicas de la consola
-// debe reflejar esa diferencia antes de prometer bloqueo de archivos.
+// DETECCION Y REMEDIACION. Prevenir un guardado en el instante exacto exige un
+// driver minifilter en modo kernel. En modo usuario se hace lo siguiente mejor:
+// el archivo llega a escribirse y el agente lo RETIRA enseguida a cuarentena si
+// cae fuera de las carpetas permitidas (regla `storage.allowed_paths`). Queda una
+// ventana de milisegundos, pero el documento no persiste donde no debe. La
+// decision es conservadora —solo documentos, nunca rutas del sistema— y
+// recuperable —cuarentena, no borrado— (ver internal/enforce/storage.go).
 type FilesCollector struct {
 	log     zerolog.Logger
 	maquina *maquinaArchivos
@@ -39,14 +44,31 @@ type FilesCollector struct {
 	// rutasExtra son carpetas de la politica (allowed_paths, confidential_paths)
 	// que interesa vigilar aunque esten fuera del perfil del usuario.
 	rutasExtra func() []string
+
+	// allowed son las carpetas permitidas (storage.allowed_paths). Si esta vacia,
+	// no se remedia nada: "sin carpeta seleccionada" no es "prohibido en todas
+	// partes".
+	allowed func() []string
+	// dirCuarentena es donde se retiran los archivos remediados.
+	dirCuarentena string
 }
 
-func NewFilesCollector(log zerolog.Logger, rutasExtra func() []string) *FilesCollector {
+func NewFilesCollector(log zerolog.Logger, rutasExtra, allowed func() []string, dirCuarentena string) *FilesCollector {
 	return &FilesCollector{
-		log:        log.With().Str("recolector", "archivos").Logger(),
-		maquina:    nuevaMaquinaArchivos(),
-		rutasExtra: rutasExtra,
+		log:           log.With().Str("recolector", "archivos").Logger(),
+		maquina:       nuevaMaquinaArchivos(),
+		rutasExtra:    rutasExtra,
+		allowed:       allowed,
+		dirCuarentena: dirCuarentena,
 	}
+}
+
+// rutasPermitidas devuelve las carpetas permitidas, tolerando un accesor nulo.
+func (c *FilesCollector) rutasPermitidas() []string {
+	if c.allowed == nil {
+		return nil
+	}
+	return c.allowed()
 }
 
 func (c *FilesCollector) Name() string { return "archivos" }
@@ -58,7 +80,7 @@ const IntervaloRevisionRaices = 15 * time.Second
 
 func (c *FilesCollector) Run(ctx context.Context, emit Emit) {
 	var (
-		mu       sync.Mutex
+		mu        sync.Mutex
 		vigiladas = map[string]context.CancelFunc{}
 	)
 
@@ -350,6 +372,22 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 			}
 
 			if ev, recortado := c.maquina.observar(cambio, ahora); ev != nil {
+				// REMEDIACION: un documento escrito fuera de las carpetas
+				// permitidas se retira a cuarentena. Solo lo que no es un borrado
+				// (el archivo tiene que existir para moverlo) y solo si la regla
+				// aplica —la decision, conservadora, vive en enforce—.
+				if cambio.Operacion != archivoEliminado &&
+					enforce.DebeCuarentenar(cambio.Ruta, c.rutasPermitidas()) {
+					if dest, err := enforce.Cuarentenar(cambio.Ruta, c.dirCuarentena); err == nil {
+						ev.Payload["enforcement"] = "quarantine"
+						c.log.Warn().
+							Str("ruta", cambio.Ruta).Str("cuarentena", dest).
+							Msg("documento fuera de carpeta permitida: retirado a cuarentena")
+					} else {
+						c.log.Error().Err(err).Str("ruta", cambio.Ruta).
+							Msg("no se pudo retirar a cuarentena el documento fuera de carpeta permitida")
+					}
+				}
 				emit(*ev)
 			} else if recortado {
 				c.log.Warn().Str("ruta", raiz).

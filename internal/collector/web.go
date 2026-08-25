@@ -289,3 +289,55 @@ func tiempoChrome(micros int64) time.Time {
 func aMicrosChrome(t time.Time) int64 {
 	return t.UTC().UnixMicro() + segundosEntre1601Y1970*1_000_000
 }
+
+// webmailConocidos son dominios de correo web habituales, para la regla
+// block_webmail. La lista es corta y explicita a proposito: mejor no bloquear un
+// webmail raro que bloquear por error algo que no lo es.
+var webmailConocidos = []string{
+	"mail.google.com", "gmail.com", "outlook.live.com", "outlook.office365.com",
+	"outlook.office.com", "mail.yahoo.com", "proton.me", "mail.proton.me",
+	"correo.google.com", "zoho.com", "mail.com",
+}
+
+// DominioBloqueado decide si un dominio esta bloqueado por la politica, y por
+// que motivo. La coincidencia es por sufijo de dominio: "eltiempo.com" bloquea
+// "www.eltiempo.com" pero no "noeltiempo.com".
+//
+// Es la mitad portable de la notificacion #1: separa la DECISION —probada aqui—
+// del aviso en pantalla, que es puro Windows.
+func DominioBloqueado(dominio string, p *contract.Policy) (bool, string) {
+	if p == nil || dominio == "" {
+		return false, ""
+	}
+	d := toLowerASCII(dominio)
+
+	for _, b := range p.Web.BlockedDomains {
+		if coincideDominio(d, toLowerASCII(b)) {
+			return true, "restringido por la politica de seguridad"
+		}
+	}
+	if p.Web.BlockWebmail {
+		for _, w := range webmailConocidos {
+			if coincideDominio(d, w) {
+				return true, "correo web restringido por la politica de seguridad"
+			}
+		}
+	}
+	// Lista blanca: con allowed_domains, todo lo que no este dentro se bloquea.
+	if len(p.Web.AllowedDomains) > 0 {
+		for _, a := range p.Web.AllowedDomains {
+			if coincideDominio(d, toLowerASCII(a)) {
+				return false, ""
+			}
+		}
+		return true, "fuera de la lista de sitios permitidos"
+	}
+	return false, ""
+}
+
+func coincideDominio(dominio, patron string) bool {
+	if patron == "" {
+		return false
+	}
+	return dominio == patron || strings.HasSuffix(dominio, "."+patron)
+}
