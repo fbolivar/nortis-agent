@@ -32,6 +32,7 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/queue"
 	svc "github.com/fbolivar/nortis-agent/internal/service"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
+	"github.com/fbolivar/nortis-agent/internal/tamper"
 )
 
 func main() {
@@ -58,6 +59,12 @@ func main() {
 		err = cmdClipboardWatch(os.Args[2:])
 	case "revert":
 		err = cmdRevert()
+	case "lock":
+		err = cmdLock()
+	case "unlock":
+		err = cmdUnlock(os.Args[2:])
+	case "tamper-status":
+		err = cmdTamperStatus()
 	case "status":
 		err = cmdStatus()
 	case "selftest":
@@ -83,6 +90,9 @@ func usage() {
   start | stop | restart               Controla el servicio
   uninstall                            Desinstala el servicio y revierte los controles
   revert                               Revierte los controles sin tocar el servicio
+  lock                                 Aplica la proteccion anti-manipulacion
+  unlock -token <vale>                 Autoriza la desinstalacion con un vale de la consola
+  tamper-status                        Estado de la proteccion anti-manipulacion
   run                                  Ejecuta en primer plano (diagnostico)
   status                               Estado local, sin tocar la red
   selftest                             Valida el camino cola -> consola
@@ -290,8 +300,119 @@ func cmdControl(action string) error {
 		return fmt.Errorf("%s: %w (¿tiene privilegios de administrador?)", action, errServicio)
 	}
 
+	// Tras instalar, se endurece de inmediato: si el equipo se reiniciara antes
+	// del primer ciclo del servicio, no debe existir una ventana en la que el
+	// agente este instalado pero desprotegido. Endurecer se NIEGA si no hay clave
+	// de consola configurada (interbloqueo de seguridad); en ese caso se avisa en
+	// vez de fallar, porque el equipo igual queda instalado y el servicio
+	// reintentara endurecer en cada ciclo cuando la clave aparezca.
+	if action == "install" {
+		switch err := tamper.Endurecer(svc.Config.Name, agentcfg.Dir()); {
+		case err == nil:
+			fmt.Println("Proteccion anti-manipulacion aplicada.")
+		case errors.Is(err, tamper.ErrSinClaveConsola):
+			fmt.Println("AVISO: sin console_pubkey.pem, el agente queda SIN proteccion anti-manipulacion.")
+			fmt.Println("       Configure la clave de la consola y la proteccion se aplicara sola.")
+		default:
+			fmt.Fprintf(os.Stderr, "aviso: no se pudo endurecer: %v\n", err)
+		}
+	}
+
 	fmt.Printf("Servicio: %s completado.\n", action)
 	return nil
+}
+
+/* ----------------------------------------------------- anti-manipulacion --- */
+
+// cmdLock aplica la proteccion a mano. El servicio ya la reafirma en cada ciclo;
+// esto sirve para forzarla tras colocar la clave de la consola sin reinstalar.
+func cmdLock() error {
+	if err := tamper.Endurecer(svc.Config.Name, agentcfg.Dir()); err != nil {
+		return err
+	}
+	fmt.Println("Proteccion aplicada: el usuario estandar no puede detener ni desinstalar el agente,")
+	fmt.Println("ni borrar la cola de eventos. Quitarlo exige administrador + un vale de la consola.")
+	return nil
+}
+
+// cmdUnlock entrega un vale de desinstalacion al servicio.
+//
+// Verifica el vale localmente para fallar rapido ante uno invalido, y luego lo
+// deja en el archivo de peticion. Quien REALMENTE afloja el DACL es el servicio
+// (SYSTEM), que vuelve a validar el vale: este proceso corre como administrador
+// y a proposito NO tiene permiso para reescribir la proteccion por si mismo.
+func cmdUnlock(args []string) error {
+	fs := flag.NewFlagSet("unlock", flag.ExitOnError)
+	token := fs.String("token", "", "vale de desinstalacion emitido por la consola")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *token == "" {
+		return errors.New("falta -token")
+	}
+
+	endpointID, err := endpointIDLocal()
+	if err != nil {
+		return err
+	}
+	if endpointID == "" {
+		return errors.New("este equipo no esta enrolado: no hay endpoint al que ligar el vale")
+	}
+
+	// Verificacion temprana: si el vale no sirve, se dice ya y no se deja rastro.
+	if _, err := tamper.Verificar(agentcfg.Dir(), *token, endpointID, time.Now().UTC()); err != nil {
+		return fmt.Errorf("el vale no es valido para este equipo: %w", err)
+	}
+
+	if err := agentcfg.EnsureDir(); err != nil {
+		return err
+	}
+	if err := os.WriteFile(tamper.RutaSolicitudDesbloqueo(agentcfg.Dir()), []byte(*token), 0o600); err != nil {
+		return fmt.Errorf("no se pudo entregar el vale al servicio: %w", err)
+	}
+
+	fmt.Println("Vale aceptado. El servicio retirara la proteccion en unos segundos.")
+	fmt.Println("Despues, y dentro de 10 minutos: nortis-agent uninstall")
+	return nil
+}
+
+// cmdTamperStatus imprime el estado de la proteccion, sin modificar nada.
+func cmdTamperStatus() error {
+	e := tamper.EstadoActual(svc.Config.Name, agentcfg.Dir())
+	si := func(b bool) string {
+		if b {
+			return "si"
+		}
+		return "no"
+	}
+	fmt.Printf(`Proteccion anti-manipulacion
+
+  soportado (Windows):     %s
+  servicio endurecido:     %s
+  directorio endurecido:   %s
+  clave de consola:        %s
+`,
+		si(e.Soportado), si(e.ServicioEndurecido), si(e.DirectorioEndurecido),
+		si(e.ClaveConsolaConfigurada))
+	if !e.ClaveConsolaConfigurada {
+		fmt.Println("\n  Sin clave de consola no se endurece (interbloqueo de seguridad): coloque")
+		fmt.Println("  console_pubkey.pem en el directorio de datos o empotrela al compilar.")
+	}
+	if e.Detalle != "" {
+		fmt.Printf("\n  detalle: %s\n", e.Detalle)
+	}
+	return nil
+}
+
+// endpointIDLocal lee el endpoint_id del estado local sin tocar la red.
+func endpointIDLocal() (string, error) {
+	q, err := queue.Open(agentcfg.QueuePath())
+	if err != nil {
+		return "", err
+	}
+	defer q.Close()
+	id, _ := q.GetMeta(queue.MetaEndpointID)
+	return id, nil
 }
 
 // cmdRevert deshace los controles sin tocar el servicio.

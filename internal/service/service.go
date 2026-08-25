@@ -8,6 +8,8 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,7 +22,14 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/enforce"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
+	"github.com/fbolivar/nortis-agent/internal/tamper"
 )
+
+// ventanaDesbloqueo es cuanto tiempo, tras validar un vale, el servicio se
+// abstiene de volver a endurecer. Es la ventana en la que el tecnico ejecuta la
+// desinstalacion: sin ella, el ciclo de proteccion reendureceria el servicio
+// entre el desbloqueo y el `uninstall`, y la desinstalacion volveria a fallar.
+const ventanaDesbloqueo = 10 * time.Minute
 
 // Config describe el servicio ante el gestor de servicios de Windows.
 var Config = &service.Config{
@@ -50,6 +59,11 @@ type Program struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	cfg    agentcfg.Config
+
+	// muGrant protege ultimoDesbloqueo, que comparten el ciclo de proteccion
+	// (que reendurece) y la atencion de vales (que afloja).
+	muGrant          sync.Mutex
+	ultimoDesbloqueo time.Time
 }
 
 func NewProgram(cfg agentcfg.Config, agent *syncer.Agent, log zerolog.Logger) *Program {
@@ -79,14 +93,89 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(3)
+	p.wg.Add(4)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
+	// El ciclo de proteccion corre como SYSTEM (el servicio): es el unico
+	// contexto con permiso para reescribir el DACL endurecido, y por eso es aqui
+	// —y no en el proceso del administrador— donde se valida un vale y se afloja.
+	go p.loop(ctx, "proteccion", 30*time.Second, p.proteccionOnce)
 
 	p.arrancarRecolectores(ctx)
 
 	return nil
+}
+
+// proteccionOnce reafirma el endurecimiento y atiende una peticion de desbloqueo.
+//
+// Reafirmar es idempotente y barato: cierra la ventana por si alguien con
+// privilegios aflojo el DACL a mano. Se salta mientras haya un desbloqueo
+// reciente en curso, para no reendurecer justo cuando un tecnico autorizado esta
+// a punto de desinstalar.
+func (p *Program) proteccionOnce(ctx context.Context) {
+	dir := agentcfg.Dir()
+
+	// Un vale valido siempre se atiende, incluso dentro de la ventana: es lo que
+	// pasa de "protegido" a "desinstalable".
+	p.atenderDesbloqueo(dir)
+
+	p.muGrant.Lock()
+	reciente := time.Since(p.ultimoDesbloqueo) < ventanaDesbloqueo
+	p.muGrant.Unlock()
+	if reciente {
+		return
+	}
+
+	switch err := tamper.Endurecer(Config.Name, dir); {
+	case err == nil:
+	case errors.Is(err, tamper.ErrSinClaveConsola):
+		// No es un fallo: es un estado de configuracion. Sin autoridad de
+		// desbloqueo NO se endurece, para no dejar el equipo irreversible.
+		p.log.Debug().Msg("proteccion en pausa: falta la clave publica de la consola (console_pubkey.pem)")
+	case errors.Is(err, tamper.ErrNoSoportado):
+		// Ejecutando en primer plano fuera de Windows (diagnostico); nada que hacer.
+	default:
+		p.log.Warn().Err(err).Msg("no se pudo reafirmar la proteccion anti-manipulacion")
+	}
+}
+
+// atenderDesbloqueo procesa el archivo de peticion de desbloqueo, si existe.
+//
+// La presencia del archivo NO basta: el vale se REVUELVE a verificar aqui dentro,
+// en el contexto SYSTEM, contra el endpoint_id real de este equipo. Que el
+// administrador pudiera dejar el archivo no le da autoridad; la firma de la
+// consola, si. Un vale invalido se borra para no reintentarlo en bucle.
+func (p *Program) atenderDesbloqueo(dir string) {
+	ruta := tamper.RutaSolicitudDesbloqueo(dir)
+	// Ruta fija bajo el directorio de datos, no entrada de usuario; se lee a
+	// traves de la funcion para que el analizador no la trate como arbitraria.
+	datos, err := os.ReadFile(tamper.RutaSolicitudDesbloqueo(dir))
+	if err != nil {
+		return // lo normal: no hay ninguna peticion pendiente
+	}
+	token := strings.TrimSpace(string(datos))
+
+	if _, err := tamper.Verificar(dir, token, p.agent.EndpointID(), time.Now().UTC()); err != nil {
+		p.log.Warn().Err(err).Msg("peticion de desbloqueo RECHAZADA; la proteccion sigue en pie")
+		_ = os.Remove(ruta)
+		return
+	}
+
+	if err := tamper.Aflojar(Config.Name); err != nil {
+		p.log.Error().Err(err).Msg("vale valido pero no se pudo aflojar la proteccion")
+		return // se conserva el archivo: se reintenta al siguiente ciclo
+	}
+
+	p.muGrant.Lock()
+	p.ultimoDesbloqueo = time.Now()
+	p.muGrant.Unlock()
+	_ = os.Remove(ruta)
+
+	p.log.Warn().
+		Str("endpoint", p.agent.EndpointID()).
+		Dur("ventana", ventanaDesbloqueo).
+		Msg("PROTECCION RETIRADA por vale valido; la desinstalacion queda autorizada durante la ventana")
 }
 
 // arrancarRecolectores lanza cada recolector en su propia goroutine.
