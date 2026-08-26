@@ -280,6 +280,16 @@ type Policy struct {
 		Mode      AppsMode `json:"mode"`
 		Blocklist []string `json:"blocklist"`
 	} `json:"apps"`
+
+	// WorkHours restringe el uso del equipo a un horario. Fuera de la franja (en
+	// los dias marcados) el agente bloquea la sesion cada minuto: el usuario no
+	// puede trabajar fuera de horario. Days: 1=lunes..7=domingo. Start/End: "HH:MM".
+	WorkHours struct {
+		Enabled bool   `json:"enabled"`
+		Days    []int  `json:"days"`
+		Start   string `json:"start"`
+		End     string `json:"end"`
+	} `json:"work_hours"`
 }
 
 type AppsMode string

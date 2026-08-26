@@ -169,6 +169,62 @@ func ParseUninstall(payload string) (UninstallPayload, error) {
 	return p, nil
 }
 
+// --- wake: encender un equipo por Wake-on-LAN ---
+
+// WakePayload lleva la MAC del equipo a despertar. Lo envia un agente EN LINEA de
+// la misma red (el equipo destino esta apagado y no puede hacerlo el mismo).
+type WakePayload struct {
+	MAC      string `json:"mac"`
+	NotAfter int64  `json:"not_after"`
+}
+
+// ParseWake valida la MAC.
+func ParseWake(payload string) (WakePayload, error) {
+	var p WakePayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload wake ilegible: %w", err)
+	}
+	if strings.TrimSpace(p.MAC) == "" {
+		return p, errors.New("falta la MAC del equipo a encender")
+	}
+	return p, nil
+}
+
+// --- schedule_script: script recurrente ---
+
+// ScheduleScriptPayload define un script que el agente ejecuta cada
+// EveryMinutes, hasta NotAfter. ID identifica la programacion para poder
+// reemplazarla o quitarla (EveryMinutes = 0).
+type ScheduleScriptPayload struct {
+	ID           string `json:"id"`
+	Interpreter  string `json:"interpreter"` // powershell | cmd
+	Script       string `json:"script"`
+	EveryMinutes int    `json:"every_minutes"`
+	NotAfter     int64  `json:"not_after"`
+}
+
+// ParseScheduleScript valida la programacion.
+func ParseScheduleScript(payload string) (ScheduleScriptPayload, error) {
+	var p ScheduleScriptPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload schedule_script ilegible: %w", err)
+	}
+	if strings.TrimSpace(p.ID) == "" {
+		return p, errors.New("falta el identificador de la programacion")
+	}
+	// EveryMinutes = 0 significa "quitar esta programacion"; en ese caso no se
+	// exige script ni interprete.
+	if p.EveryMinutes > 0 {
+		if p.Interpreter != "powershell" && p.Interpreter != "cmd" {
+			return p, fmt.Errorf("interprete no soportado: %q", p.Interpreter)
+		}
+		if strings.TrimSpace(p.Script) == "" {
+			return p, errors.New("script vacio")
+		}
+	}
+	return p, nil
+}
+
 // descargarVerificado baja `url` a un archivo temporal con extension `ext` y
 // comprueba que su sha256 coincide con `shaHex`. Si no coincide, borra el archivo
 // y devuelve error: nunca se ejecuta un binario sin verificar su integridad.
