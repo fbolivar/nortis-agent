@@ -342,3 +342,19 @@ func (a *Agent) ReportarComando(ctx context.Context, id, status, msgErr string) 
 		EndpointID: a.endpointID, CommandID: id, Status: status, Error: msgErr,
 	})
 }
+
+// PollTareas reclama las tareas pendientes (vacio si aun no hay endpoint_id).
+func (a *Agent) PollTareas(ctx context.Context) (contract.PollTareasResponse, error) {
+	if a.endpointID == "" {
+		return contract.PollTareasResponse{}, nil
+	}
+	return a.client.PollTareas(ctx, a.endpointID)
+}
+
+// ReportarTarea informa el resultado de ejecutar una tarea.
+func (a *Agent) ReportarTarea(ctx context.Context, taskID, status string, exitCode *int, output, msgErr string) error {
+	return a.client.ReportarTarea(ctx, contract.ReportarTareaRequest{
+		EndpointID: a.endpointID, TaskID: taskID, Status: status,
+		ExitCode: exitCode, Output: output, Error: msgErr,
+	})
+}
