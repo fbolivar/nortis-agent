@@ -294,6 +294,23 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		code, out, err := remoteexec.EjecutarRestart(ctx)
 		p.terminarTarea(ctx, t, code, out, err)
 
+	case "lock":
+		code, out, err := remoteexec.EjecutarLock(ctx)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "wipe":
+		payload, err := remoteexec.ParseWipe(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarWipe(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
 	case "run_script":
 		payload, err := remoteexec.ParseRunScript(t.Payload)
 		if err != nil {

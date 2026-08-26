@@ -76,6 +76,25 @@ func Vencida(notAfter int64, ahora time.Time) bool {
 	return notAfter > 0 && ahora.Unix() > notAfter
 }
 
+// --- wipe: borrado remoto de datos ---
+
+// WipePayload es el contenido de una tarea wipe. Solo lleva caducidad: el alcance
+// del borrado NO lo decide la consola por seguridad (una ruta firmada arbitraria
+// seria un borrado de cualquier cosa); el agente borra un conjunto fijo y acotado
+// —las carpetas de documentos del usuario y las unidades extraibles—.
+type WipePayload struct {
+	NotAfter int64 `json:"not_after"`
+}
+
+// ParseWipe lee el payload de una tarea wipe.
+func ParseWipe(payload string) (WipePayload, error) {
+	var p WipePayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload wipe ilegible: %w", err)
+	}
+	return p, nil
+}
+
 // descargarVerificado baja `url` a un archivo temporal con extension `ext` y
 // comprueba que su sha256 coincide con `shaHex`. Si no coincide, borra el archivo
 // y devuelve error: nunca se ejecuta un binario sin verificar su integridad.
