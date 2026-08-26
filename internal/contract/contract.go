@@ -242,6 +242,14 @@ type Policy struct {
 		WindowTitles bool `json:"window_titles"`
 		Screenshots  bool `json:"screenshots"`
 	} `json:"monitoring"`
+
+	// Session gobierna el bloqueo de la sesion por inactividad. Se aplica por la
+	// politica de inactividad de Windows (el propio SO bloquea), no por un daemon
+	// del agente: asi funciona igual en consola y por RDP. 0 = sin bloqueo
+	// gestionado por Nortis (no se toca la configuracion del equipo).
+	Session struct {
+		LockAfterMinutes int `json:"lock_after_minutes"`
+	} `json:"session"`
 }
 
 type USBMode string

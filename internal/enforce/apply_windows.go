@@ -108,11 +108,55 @@ func (a *Aplicador) Aplicar(p *contract.Policy) Resultado {
 		a.log.Warn().Str("control", s).Msg("control no aplicable por esta via; queda solo como alerta")
 	}
 
+	a.aplicarBloqueoSesion(p)
+
 	estado.Aplicado = true
 	if err := estado.Guardar(a.dir); err != nil {
 		a.log.Error().Err(err).Msg("no se pudo guardar el estado previo; la reversion podria quedar incompleta")
 	}
 	return res
+}
+
+/* ------------------------------------------------------ Bloqueo sesion --- */
+
+// Politica de inactividad de Windows. Es la clave que respalda la directiva de
+// seguridad "Inicio de sesion interactivo: limite de inactividad de la maquina":
+// Windows bloquea la sesion tras N segundos sin actividad, sin que el agente
+// tenga que vivir en la sesion del usuario (evita el problema de la sesion 0 y
+// funciona igual por RDP).
+const (
+	claveInactividad = `SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System`
+	valorInactividad = "InactivityTimeoutSecs"
+	maxInactividad   = 599940 // tope que acepta Windows (segundos)
+)
+
+// aplicarBloqueoSesion escribe (o retira) el limite de inactividad segun la
+// politica. 0 minutos = retirar el valor, para no dejar una directiva huerfana
+// que Nortis no gestiona.
+func (a *Aplicador) aplicarBloqueoSesion(p *contract.Policy) {
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, claveInactividad, registry.SET_VALUE)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("no se pudo abrir la clave de inactividad")
+		return
+	}
+	defer func() { _ = k.Close() }()
+
+	segundos := p.Session.LockAfterMinutes * 60
+	if segundos <= 0 {
+		// DeleteValue devuelve error si no existia; da igual, el objetivo es que
+		// no quede puesto.
+		_ = k.DeleteValue(valorInactividad)
+		return
+	}
+	if segundos > maxInactividad {
+		segundos = maxInactividad
+	}
+	if err := k.SetDWordValue(valorInactividad, uint32(segundos)); err != nil {
+		a.log.Warn().Err(err).Msg("no se pudo escribir el limite de inactividad")
+		return
+	}
+	a.log.Info().Int("minutos", p.Session.LockAfterMinutes).
+		Msg("bloqueo de sesion por inactividad aplicado")
 }
 
 /* ----------------------------------------------------------------- USB --- */
@@ -339,6 +383,11 @@ func (a *Aplicador) Revertir() {
 			_ = borrarValor(registry.LOCAL_MACHINE, clave, "DnsOverHttpsMode")
 		}
 	}
+
+	// Bloqueo de sesion: se retira el limite de inactividad que pusimos. No se
+	// intenta restaurar un valor previo del cliente: es una directiva que casi
+	// nunca viene puesta de fabrica, y dejar 0 es el estado neutro de Windows.
+	_ = borrarValor(registry.LOCAL_MACHINE, claveInactividad, valorInactividad)
 
 	a.vaciarCacheDNS()
 	_ = os.Remove(rutaEstado(a.dir))
