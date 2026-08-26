@@ -114,6 +114,21 @@ func normRuta(p string) string {
 	return strings.ToLower(filepath.Clean(p))
 }
 
+// RutaRemediable indica si una ruta puede retirarse a cuarentena CON SEGURIDAD:
+// nunca carpetas del sistema, temporales, de aplicaciones ni del propio Nortis.
+// Retirar algo de ahi romperia el equipo o entraria en bucle. Es la guarda comun
+// a toda remediacion —por carpeta no autorizada o por clase de dato vigilada—:
+// es peor destrozar un equipo que dejar pasar un archivo.
+func RutaRemediable(ruta string) bool {
+	r := normRuta(ruta)
+	for _, frag := range fragmentosExcluidos {
+		if strings.Contains(r, frag) {
+			return false
+		}
+	}
+	return true
+}
+
 // BajoAlguna indica si `ruta` esta dentro de alguna de las `bases`. La
 // comparacion normaliza igual que la consola (minusculas, sin barra final) para
 // que "D:\Compartido" y "d:\compartido\" coincidan.
@@ -148,10 +163,8 @@ func DebeCuarentenar(ruta string, allowedPaths []string) bool {
 	if !extensionesSensibles[strings.ToLower(filepath.Ext(r))] {
 		return false
 	}
-	for _, frag := range fragmentosExcluidos {
-		if strings.Contains(r, frag) {
-			return false
-		}
+	if !RutaRemediable(ruta) {
+		return false
 	}
 	return !BajoAlguna(ruta, allowedPaths)
 }

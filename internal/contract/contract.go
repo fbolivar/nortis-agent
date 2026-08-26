@@ -261,7 +261,24 @@ type Policy struct {
 		BlockNonDomain    bool `json:"block_non_domain"`
 		BlockBluetooth    bool `json:"block_bluetooth"`
 	} `json:"network"`
+
+	// Classification gobierna que hacer cuando un archivo se etiqueta con una de
+	// las clases VIGILADAS (por contenido o metadato). Con modo 'quarantine' el
+	// agente RETIRA el archivo a cuarentena —recuperable— aunque estuviera en una
+	// carpeta permitida: se protege el dato por su clase, no por donde cae. Con
+	// 'alert' solo se abre el incidente. Watched vacio = no aplica.
+	Classification struct {
+		Watched []string           `json:"watched"`
+		Mode    ClassificationMode `json:"mode"`
+	} `json:"classification"`
 }
+
+type ClassificationMode string
+
+const (
+	ClassificationAlert      ClassificationMode = "alert"
+	ClassificationQuarantine ClassificationMode = "quarantine"
+)
 
 type USBMode string
 

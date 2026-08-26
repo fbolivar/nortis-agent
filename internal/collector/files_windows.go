@@ -57,12 +57,23 @@ type FilesCollector struct {
 	// clasificacion por contenido configurada (o sin consentimiento). Devuelve la
 	// etiqueta, nunca el contenido.
 	clasificar func(ruta string) string
+
+	// cuarentenarClase decide, dada la etiqueta de un archivo, si su clase esta
+	// VIGILADA con modo cuarentena en la politica. Nulo = la politica de clase no
+	// remedia (solo alerta). Independiente de las carpetas permitidas: protege el
+	// dato por su clase, no por donde cae.
+	cuarentenarClase func(clase string) bool
 }
 
 // UsarClasificador conecta la clasificacion de contenido: el colector añadira la
 // etiqueta a cada evento de archivo cuando la funcion devuelva una.
 func (c *FilesCollector) UsarClasificador(fn func(ruta string) string) {
 	c.clasificar = fn
+}
+
+// UsarCuarentenaClase conecta la politica de cuarentena por clase de dato.
+func (c *FilesCollector) UsarCuarentenaClase(fn func(clase string) bool) {
+	c.cuarentenarClase = fn
 }
 
 func NewFilesCollector(log zerolog.Logger, rutasExtra, allowed func() []string, dirCuarentena string) *FilesCollector {
@@ -423,19 +434,36 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 				Msg("cambio de archivo detectado")
 
 			if ev, recortado := c.maquina.observar(cambio, ahora); ev != nil {
-				// REMEDIACION: un documento escrito fuera de las carpetas
-				// permitidas se retira a cuarentena. Solo lo que no es un borrado
-				// (el archivo tiene que existir para moverlo) y solo si la regla
-				// aplica —la decision, conservadora, vive en enforce—.
-				permitidas := c.rutasPermitidas()
-				debe := cambio.Operacion != archivoEliminado &&
-					enforce.DebeCuarentenar(cambio.Ruta, permitidas)
+				existe := cambio.Operacion != archivoEliminado
+
+				// Clasificacion por contenido (Fase B): se calcula ANTES de decidir
+				// la cuarentena —una clase vigilada puede motivarla— y mientras el
+				// archivo sigue en su sitio (cuarentenar lo mueve). Solo lo que
+				// existe; se añade la etiqueta al evento, el contenido nunca sale.
+				var etiqueta string
+				if c.clasificar != nil && existe {
+					if etiqueta = c.clasificar(cambio.Ruta); etiqueta != "" {
+						ev.Payload["classification"] = etiqueta
+					}
+				}
+
+				// REMEDIACION: se retira a cuarentena si el documento cae FUERA de
+				// las carpetas permitidas (regla de carpeta) O si su CLASE esta
+				// vigilada con modo cuarentena (politica de clasificacion). La
+				// segunda protege el dato aunque este en carpeta permitida, pero
+				// respeta la misma guarda: nunca rutas del sistema.
+				porCarpeta := existe && enforce.DebeCuarentenar(cambio.Ruta, c.rutasPermitidas())
+				porClase := existe && etiqueta != "" && c.cuarentenarClase != nil &&
+					c.cuarentenarClase(etiqueta) && enforce.RutaRemediable(cambio.Ruta)
 				c.log.Debug().
-					Str("ruta", cambio.Ruta).
-					Strs("permitidas", permitidas).
-					Bool("cuarentenar", debe).
+					Str("ruta", cambio.Ruta).Str("clase", etiqueta).
+					Bool("por_carpeta", porCarpeta).Bool("por_clase", porClase).
 					Msg("decision de cuarentena")
-				if debe {
+				if porCarpeta || porClase {
+					motivo := "fuera de carpeta permitida"
+					if porClase {
+						motivo = "clase de dato vigilada: " + etiqueta
+					}
 					if dest, err := enforce.Cuarentenar(cambio.Ruta, c.dirCuarentena); err == nil {
 						ev.Payload["enforcement"] = "quarantine"
 						// quarantine_id es el nombre del archivo dentro de la carpeta
@@ -444,19 +472,11 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 						// archivo retirado sin revelar su contenido.
 						ev.Payload["quarantine_id"] = filepath.Base(dest)
 						c.log.Warn().
-							Str("ruta", cambio.Ruta).Str("cuarentena", dest).
-							Msg("documento fuera de carpeta permitida: retirado a cuarentena")
+							Str("ruta", cambio.Ruta).Str("cuarentena", dest).Str("motivo", motivo).
+							Msg("documento retirado a cuarentena")
 					} else {
-						c.log.Error().Err(err).Str("ruta", cambio.Ruta).
-							Msg("no se pudo retirar a cuarentena el documento fuera de carpeta permitida")
-					}
-				}
-
-				// Clasificacion por contenido (Fase B): solo lo que existe (no un
-				// borrado). Se añade la etiqueta al evento; el contenido nunca sale.
-				if c.clasificar != nil && cambio.Operacion != archivoEliminado {
-					if etiqueta := c.clasificar(cambio.Ruta); etiqueta != "" {
-						ev.Payload["classification"] = etiqueta
+						c.log.Error().Err(err).Str("ruta", cambio.Ruta).Str("motivo", motivo).
+							Msg("no se pudo retirar a cuarentena el documento")
 					}
 				}
 
