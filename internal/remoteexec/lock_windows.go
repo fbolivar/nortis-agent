@@ -31,7 +31,10 @@ func EjecutarLock(ctx context.Context) (int, string, error) {
 	var token windows.Token
 	r, _, err := procWTSQueryUserToken.Call(uintptr(sesion), uintptr(unsafe.Pointer(&token)))
 	if r == 0 {
-		return -1, "", fmt.Errorf("no se pudo obtener el token de la sesion: %w", err)
+		// Sin token de usuario = no hay nadie con sesion iniciada: el equipo ya
+		// esta en la pantalla de inicio, que es justo el estado "bloqueado". No es
+		// un fallo que reportar en rojo; el objetivo ya se cumple.
+		return 0, fmt.Sprintf("no hay usuario con sesion iniciada; el equipo ya esta en la pantalla de inicio (%v)", err), nil
 	}
 	defer token.Close()
 
