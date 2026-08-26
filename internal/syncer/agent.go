@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -376,5 +377,17 @@ func (a *Agent) ReportarInventario(ctx context.Context, hw map[string]any, sw []
 	}
 	return a.client.ReportarInventario(ctx, contract.InventoryRequest{
 		EndpointID: endpointID, Hardware: hw, Software: sw,
+	})
+}
+
+// SubirCaptura sube una captura de pantalla en base64 (no hace nada sin endpoint).
+func (a *Agent) SubirCaptura(ctx context.Context, png []byte) error {
+	endpointID := a.EndpointID()
+	if endpointID == "" {
+		return nil
+	}
+	return a.client.SubirCaptura(ctx, contract.ScreenshotRequest{
+		EndpointID:  endpointID,
+		ImageBase64: base64.StdEncoding.EncodeToString(png),
 	})
 }

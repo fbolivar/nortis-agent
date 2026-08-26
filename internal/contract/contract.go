@@ -418,3 +418,13 @@ type InventoryRequest struct {
 	Hardware   map[string]any `json:"hardware"`
 	Software   []SoftwareItem `json:"software"`
 }
+
+// --- Captura de pantalla (monitoreo con consentimiento) ---
+
+// ScreenshotRequest sube una captura de pantalla en base64. Solo se envia si la
+// politica trae screenshots=true, que la consola unicamente entrega con
+// consentimiento firmado del tenant.
+type ScreenshotRequest struct {
+	EndpointID  string `json:"endpoint_id"`
+	ImageBase64 string `json:"image_base64"`
+}

@@ -20,6 +20,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/fbolivar/nortis-agent/internal/agentcfg"
+	"github.com/fbolivar/nortis-agent/internal/capture"
 	"github.com/fbolivar/nortis-agent/internal/classify"
 	"github.com/fbolivar/nortis-agent/internal/collector"
 	"github.com/fbolivar/nortis-agent/internal/contract"
@@ -127,7 +128,7 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(10)
+	p.wg.Add(11)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
@@ -156,6 +157,10 @@ func (p *Program) Start(s service.Service) error {
 	// 6 horas sobra. La primera pasada es al arrancar, para que un equipo recien
 	// enrolado aparezca en el inventario sin esperar.
 	go p.loop(ctx, "inventario", 6*time.Hour, p.inventarioOnce)
+	// Captura de pantalla: cada 30 min SOLO si la politica trae screenshots=true,
+	// que la consola unicamente entrega con consentimiento firmado del tenant. Sin
+	// el flag, capturaOnce no toca la pantalla.
+	go p.loop(ctx, "captura", 30*time.Minute, p.capturaOnce)
 
 	p.arrancarRecolectores(ctx)
 
@@ -376,6 +381,33 @@ func (p *Program) inventarioOnce(ctx context.Context) {
 		return
 	}
 	p.log.Info().Int("programas", len(sw)).Msg("inventario reportado")
+}
+
+// capturaOnce toma una captura de pantalla y la sube, SOLO si la politica trae
+// screenshots=true (que la consola unicamente entrega con consentimiento firmado).
+// Sin el flag no se toca la pantalla; con el, el agente captura y envia el PNG.
+func (p *Program) capturaOnce(ctx context.Context) {
+	pol := p.agent.Policy()
+	if pol == nil || !pol.Monitoring.Screenshots {
+		return
+	}
+	png, err := capture.Capturar(ctx)
+	if err != nil {
+		p.log.Debug().Err(err).Msg("no se pudo capturar la pantalla")
+		return
+	}
+	// Tope de tamaño: una captura descomunal (multimonitor 4K) no debe saturar la
+	// cola ni el almacenamiento. Si excede, se descarta esta ronda.
+	const maxBytes = 4 << 20
+	if len(png) > maxBytes {
+		p.log.Warn().Int("bytes", len(png)).Msg("captura demasiado grande; se descarta")
+		return
+	}
+	if err := p.agent.SubirCaptura(ctx, png); err != nil {
+		p.log.Debug().Err(err).Msg("no se pudo subir la captura")
+		return
+	}
+	p.log.Info().Int("bytes", len(png)).Msg("captura de pantalla enviada")
 }
 
 // actualizarOnce pregunta a la consola si hay version nueva y, si la hay y es

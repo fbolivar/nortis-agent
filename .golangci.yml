@@ -120,6 +120,14 @@ linters:
         linters:
           - gosec
 
+      # La captura de pantalla obtiene el token de la sesion del usuario
+      # (WTSQueryUserToken) pasando un puntero a HANDLE (G103), la misma clase de
+      # codigo Win32 ya excluida arriba.
+      - path: internal/capture/
+        text: "G103"
+        linters:
+          - gosec
+
       # Los colectores lanzan el proceso auxiliar en la sesion del usuario con la
       # ruta del propio ejecutable (G204) y leen archivos por rutas que reporta el
       # sistema de archivos, no una entrada de usuario (G304). Son inherentes a
