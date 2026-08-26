@@ -17,6 +17,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -115,4 +117,82 @@ func descargarVerificado(ctx context.Context, url, shaHex, ext string) (string, 
 		return "", fmt.Errorf("sha256 no coincide: esperado %s, obtenido %s", shaHex, got)
 	}
 	return tmp, nil
+}
+
+// --- push_file: colocar un archivo en el equipo ---
+
+// PushFilePayload es el contenido de una tarea push_file.
+type PushFilePayload struct {
+	URL      string `json:"url"`
+	SHA256   string `json:"sha256"`
+	DestPath string `json:"dest_path"`
+	NotAfter int64  `json:"not_after"`
+}
+
+// ParsePushFile lee y valida el payload de una tarea push_file. Exige una ruta
+// destino ABSOLUTA y sin "..": la consola encarga la accion, pero el agente no
+// deja que una ruta relativa o con traversal escriba fuera de donde se pretende.
+func ParsePushFile(payload string) (PushFilePayload, error) {
+	var p PushFilePayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload push_file ilegible: %w", err)
+	}
+	if p.URL == "" || len(p.SHA256) != 64 || p.DestPath == "" {
+		return p, errors.New("payload push_file incompleto (url/sha256/dest_path)")
+	}
+	if !filepath.IsAbs(p.DestPath) || strings.Contains(p.DestPath, "..") {
+		return p, fmt.Errorf("ruta destino invalida: %q", p.DestPath)
+	}
+	return p, nil
+}
+
+// EjecutarPushFile descarga el archivo (verificando sha256) y lo coloca en
+// DestPath, creando la carpeta si falta. Devuelve exito y la ruta final.
+func EjecutarPushFile(ctx context.Context, p PushFilePayload) (int, string, error) {
+	tmp, err := descargarVerificado(ctx, p.URL, p.SHA256, filepath.Ext(p.DestPath))
+	if err != nil {
+		return -1, "", err
+	}
+	// Si el movimiento tiene exito, tmp deja de existir; si falla, se limpia.
+	movido := false
+	defer func() {
+		if !movido {
+			_ = os.Remove(tmp)
+		}
+	}()
+
+	if err := os.MkdirAll(filepath.Dir(p.DestPath), 0o750); err != nil {
+		return -1, "", fmt.Errorf("no se pudo crear la carpeta destino: %w", err)
+	}
+	if err := moverArchivo(tmp, p.DestPath); err != nil {
+		return -1, "", err
+	}
+	movido = true
+	return 0, "archivo colocado en " + p.DestPath, nil
+}
+
+// moverArchivo mueve src a dst. Intenta os.Rename (instantaneo en el mismo
+// volumen) y, si falla porque cruzan de unidad, copia y borra el origen.
+func moverArchivo(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	_ = os.Remove(src)
+	return nil
 }

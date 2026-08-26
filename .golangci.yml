@@ -133,7 +133,7 @@ linters:
       # feature. La seguridad no la da gosec aqui sino la FIRMA Ed25519 que se
       # verifica antes de ejecutar y el sha256 del artefacto. Ver remoteexec.
       - path: internal/remoteexec/
-        text: "G107|G204"
+        text: "G107|G204|G304"
         linters:
           - gosec
 

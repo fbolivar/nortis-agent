@@ -250,16 +250,39 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 			return
 		}
 		code, out, err := remoteexec.EjecutarInstallMSI(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "push_file":
+		payload, err := remoteexec.ParsePushFile(t.Payload)
 		if err != nil {
-			p.log.Warn().Err(err).Int("code", code).Str("task", t.ID).Msg("install_msi fallo")
-			_ = p.agent.ReportarTarea(ctx, t.ID, "failed", &code, out, err.Error())
+			p.fallarTarea(ctx, t, err)
 			return
 		}
-		p.log.Info().Int("code", code).Str("task", t.ID).Msg("install_msi aplicado")
-		_ = p.agent.ReportarTarea(ctx, t.ID, "done", &code, out, "")
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarPushFile(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "restart":
+		code, out, err := remoteexec.EjecutarRestart(ctx)
+		p.terminarTarea(ctx, t, code, out, err)
+
 	default:
 		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
 	}
+}
+
+// terminarTarea reporta el resultado de un ejecutor (exit code + salida o error).
+func (p *Program) terminarTarea(ctx context.Context, t contract.Tarea, code int, out string, err error) {
+	if err != nil {
+		p.log.Warn().Err(err).Int("code", code).Str("task", t.ID).Str("kind", t.Kind).Msg("tarea fallo")
+		_ = p.agent.ReportarTarea(ctx, t.ID, "failed", &code, out, err.Error())
+		return
+	}
+	p.log.Info().Int("code", code).Str("task", t.ID).Str("kind", t.Kind).Msg("tarea aplicada")
+	_ = p.agent.ReportarTarea(ctx, t.ID, "done", &code, out, "")
 }
 
 func (p *Program) fallarTarea(ctx context.Context, t contract.Tarea, err error) {
