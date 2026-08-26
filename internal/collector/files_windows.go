@@ -63,6 +63,11 @@ type FilesCollector struct {
 	// remedia (solo alerta). Independiente de las carpetas permitidas: protege el
 	// dato por su clase, no por donde cae.
 	cuarentenarClase func(clase string) bool
+
+	// recienRestaurado indica si una ruta se acaba de restaurar desde la consola.
+	// Si lo esta, NO se re-cuarentena: el administrador decidio devolver el archivo
+	// y esa decision no puede deshacerse en el mismo instante. Nulo = sin gracia.
+	recienRestaurado func(ruta string) bool
 }
 
 // UsarClasificador conecta la clasificacion de contenido: el colector añadira la
@@ -74,6 +79,12 @@ func (c *FilesCollector) UsarClasificador(fn func(ruta string) string) {
 // UsarCuarentenaClase conecta la politica de cuarentena por clase de dato.
 func (c *FilesCollector) UsarCuarentenaClase(fn func(clase string) bool) {
 	c.cuarentenarClase = fn
+}
+
+// UsarGraciaRestauro conecta el registro de restauraciones recientes: una ruta
+// recien devuelta desde la consola no se re-cuarentena durante la ventana de gracia.
+func (c *FilesCollector) UsarGraciaRestauro(fn func(ruta string) bool) {
+	c.recienRestaurado = fn
 }
 
 func NewFilesCollector(log zerolog.Logger, rutasExtra, allowed func() []string, dirCuarentena string) *FilesCollector {
@@ -455,11 +466,15 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 				porCarpeta := existe && enforce.DebeCuarentenar(cambio.Ruta, c.rutasPermitidas())
 				porClase := existe && etiqueta != "" && c.cuarentenarClase != nil &&
 					c.cuarentenarClase(etiqueta) && enforce.RutaRemediable(cambio.Ruta)
+				// Gracia: si el archivo se acaba de restaurar desde la consola, no se
+				// re-cuarentena —seria deshacer al instante la decision del admin—.
+				enGracia := c.recienRestaurado != nil && c.recienRestaurado(cambio.Ruta)
 				c.log.Debug().
 					Str("ruta", cambio.Ruta).Str("clase", etiqueta).
 					Bool("por_carpeta", porCarpeta).Bool("por_clase", porClase).
+					Bool("gracia_restauro", enGracia).
 					Msg("decision de cuarentena")
-				if porCarpeta || porClase {
+				if (porCarpeta || porClase) && !enGracia {
 					motivo := "fuera de carpeta permitida"
 					if porClase {
 						motivo = "clase de dato vigilada: " + etiqueta

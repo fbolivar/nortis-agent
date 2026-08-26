@@ -33,7 +33,7 @@ type PoliticaVigente func() *contract.Policy
 // exige consentimiento es el titulo de la ventana y la captura de pantalla, que
 // no se recolectan aqui y que el agente no activa por su cuenta bajo ninguna
 // circunstancia.
-func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta string) string) []Collector {
+func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta string) string, recienRestaurado func(ruta string) bool) []Collector {
 	// Las carpetas de la politica se vigilan ADEMAS del perfil del usuario.
 	//
 	// `allowed_paths` puede parecer contraintuitivo —¿por que vigilar lo que
@@ -83,6 +83,9 @@ func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta 
 		archivos.UsarClasificador(clasificar)
 	}
 	archivos.UsarCuarentenaClase(cuarentenarClase)
+	if recienRestaurado != nil {
+		archivos.UsarGraciaRestauro(recienRestaurado)
+	}
 
 	return []Collector{
 		NewSessionCollector(log),
