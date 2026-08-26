@@ -76,6 +76,11 @@ type Program struct {
 	// refrescan desde la consola; sin reglas no inspecciona nada.
 	clasificador *classify.Clasificador
 
+	// restauros recuerda las rutas restauradas hace poco desde la consola, para no
+	// re-cuarentenarlas al instante (deshariar la decision del admin). Lo escribe
+	// el ciclo de comandos y lo lee el vigilante de archivos.
+	restauros *enforce.RegistroRestauros
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	cfg    agentcfg.Config
@@ -99,6 +104,7 @@ func NewProgram(cfg agentcfg.Config, agent *syncer.Agent, log zerolog.Logger) *P
 			&http.Client{Timeout: 10 * time.Minute}, log,
 		),
 		clasificador: classify.Nuevo(),
+		restauros:    enforce.NuevoRegistroRestauros(),
 	}
 }
 
@@ -188,6 +194,10 @@ func (p *Program) comandosOnce(ctx context.Context) {
 		var e error
 		switch cmd.Kind {
 		case "restore_file":
+			// Se marca ANTES de mover: el evento de la restauracion puede llegar al
+			// vigilante en el mismo instante, y tiene que encontrar ya la gracia
+			// puesta para no re-cuarentenar el archivo recien devuelto.
+			p.restauros.Marcar(cmd.OriginalPath, enforce.VentanaGraciaRestauro, time.Now())
 			e = enforce.RestaurarCuarentena(dir, cmd.QuarantineID, cmd.OriginalPath)
 		case "delete_quarantine":
 			e = enforce.BorrarCuarentena(dir, cmd.QuarantineID)
@@ -438,7 +448,8 @@ func (p *Program) arrancarRecolectores(ctx context.Context) {
 	// La politica se pasa como funcion, no como valor: el administrador la edita
 	// en la consola y el agente la recarga en caliente, asi que un recolector que
 	// la copiara al arrancar seguiria aplicando la de hace tres horas.
-	for _, c := range collector.Default(p.log, p.agent.Policy, p.clasificador.ClasificarArchivo) {
+	recienRestaurado := func(ruta string) bool { return p.restauros.Reciente(ruta, time.Now()) }
+	for _, c := range collector.Default(p.log, p.agent.Policy, p.clasificador.ClasificarArchivo, recienRestaurado) {
 		p.wg.Add(1)
 		go p.correrRecolector(ctx, c, emit)
 	}

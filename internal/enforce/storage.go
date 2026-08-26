@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -112,6 +113,51 @@ var fragmentosExcluidos = []string{
 
 func normRuta(p string) string {
 	return strings.ToLower(filepath.Clean(p))
+}
+
+// VentanaGraciaRestauro es cuanto ignora el agente una ruta recien restaurada
+// antes de volver a considerarla para cuarentena. Sin esta gracia, restaurar un
+// archivo mientras su clase sigue vigilada en modo cuarentena lo re-cuarentena al
+// instante (bucle): el administrador decidio devolverlo, y esa decision debe
+// sostenerse el tiempo suficiente para que el evento de la restauracion pase sin
+// dispararla. 5 minutos cubre de sobra el procesamiento del evento sin abrir una
+// ventana larga en la que un archivo realmente nuevo en esa ruta pasaria libre.
+const VentanaGraciaRestauro = 5 * time.Minute
+
+// RegistroRestauros recuerda las rutas restauradas hace poco para no volver a
+// cuarentenarlas de inmediato. Es seguro para uso concurrente: lo escribe el
+// ejecutor de comandos y lo lee el vigilante de archivos, en goroutines distintas.
+type RegistroRestauros struct {
+	mu    sync.Mutex
+	hasta map[string]time.Time
+}
+
+// NuevoRegistroRestauros crea un registro vacio.
+func NuevoRegistroRestauros() *RegistroRestauros {
+	return &RegistroRestauros{hasta: map[string]time.Time{}}
+}
+
+// Marcar anota que `ruta` se acaba de restaurar: se ignorara para cuarentena
+// hasta dentro de `ventana`. Se normaliza igual que el resto de comparaciones de
+// ruta para que coincida con lo que ve el vigilante.
+func (r *RegistroRestauros) Marcar(ruta string, ventana time.Duration, ahora time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hasta[normRuta(ruta)] = ahora.Add(ventana)
+}
+
+// Reciente indica si `ruta` se restauro dentro de la ventana de gracia. De paso
+// purga las entradas ya vencidas para que el mapa no crezca sin fin.
+func (r *RegistroRestauros) Reciente(ruta string, ahora time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k, exp := range r.hasta {
+		if ahora.After(exp) {
+			delete(r.hasta, k)
+		}
+	}
+	exp, ok := r.hasta[normRuta(ruta)]
+	return ok && ahora.Before(exp)
 }
 
 // RutaRemediable indica si una ruta puede retirarse a cuarentena CON SEGURIDAD:
