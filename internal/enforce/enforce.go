@@ -64,6 +64,10 @@ type Estado struct {
 
 	// USBStorStart es el valor original de USBSTOR\Start. -1 = no se leyo.
 	USBStorStart int `json:"usbstor_start"`
+	// BthservStart es el valor original de bthserv\Start (servicio Bluetooth),
+	// anotado la primera vez que se deshabilita para poder restaurarlo.
+	// -1 = Bluetooth no se ha tocado.
+	BthservStart int `json:"bthserv_start"`
 	// WriteProtectLeido dice si YA se anoto el valor previo. Es una marca
 	// distinta de WriteProtectExistia, y esa distincion es el punto entero:
 	//
@@ -109,6 +113,7 @@ func AnotarWriteProtect(e *Estado, valor uint32, existe bool) {
 func nuevoEstado() *Estado {
 	return &Estado{
 		USBStorStart: -1,
+		BthservStart: -1,
 		DohExistia:   map[string]bool{},
 		DohOriginal:  map[string]string{},
 	}
