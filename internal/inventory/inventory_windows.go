@@ -32,7 +32,46 @@ func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	hw := recolectarHardware()
 	estadoCifrado(ctx, hw)
 	hw["network"] = recolectarRed(ctx)
+	if sec := posturaSeguridad(ctx); sec != nil {
+		hw["security"] = sec
+	}
 	return hw, recolectarSoftware()
+}
+
+var procGetTickCount64 = windows.NewLazySystemDLL("kernel32.dll").NewProc("GetTickCount64")
+
+// uptimeSegundos devuelve cuantos segundos lleva encendido el equipo (util para
+// "lleva mucho sin reiniciar"). GetTickCount64 no envuelve a las ~49 dias.
+func uptimeSegundos() uint64 {
+	r, _, _ := procGetTickCount64.Call()
+	return uint64(r) / 1000
+}
+
+// scriptPostura consulta el estado de seguridad del equipo en una sola llamada:
+// antivirus (Defender), cortafuegos por perfil y si hay un reinicio pendiente.
+// Cada bloque es tolerante a fallo (equipos sin Defender/NetSecurity) y sale como
+// JSON para que el servidor lo interprete.
+const scriptPostura = `$av=try{Get-MpComputerStatus -ErrorAction Stop|Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureAge}catch{$null};` +
+	`$fw=try{Get-NetFirewallProfile -ErrorAction Stop|Select-Object Name,Enabled}catch{$null};` +
+	`$rb=(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending');` +
+	`[pscustomobject]@{antivirus=$av;firewall=$fw;pending_reboot=[bool]$rb}|ConvertTo-Json -Compress -Depth 4`
+
+// posturaSeguridad devuelve el estado de seguridad como mapa suelto, o nil si no
+// se pudo consultar. Corre como SYSTEM (estado de maquina, no de sesion).
+func posturaSeguridad(ctx context.Context) map[string]any {
+	ctx2, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx2, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-Command", scriptPostura).Output()
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(bytes.TrimSpace(out), &m) != nil {
+		return nil
+	}
+	return m
 }
 
 // recolectarRed devuelve las interfaces de red activas (IP y MAC) y, si el equipo
@@ -164,7 +203,8 @@ func recolectarSoftware() []contract.SoftwareItem {
 
 func recolectarHardware() map[string]any {
 	hw := map[string]any{
-		"cpu_cores": runtime.NumCPU(),
+		"cpu_cores":      runtime.NumCPU(),
+		"uptime_seconds": uptimeSegundos(),
 	}
 
 	if k, err := registry.OpenKey(registry.LOCAL_MACHINE,
