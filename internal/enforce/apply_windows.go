@@ -109,6 +109,7 @@ func (a *Aplicador) Aplicar(p *contract.Policy) Resultado {
 	}
 
 	a.aplicarBloqueoSesion(p)
+	a.aplicarRed(p, estado)
 
 	estado.Aplicado = true
 	if err := estado.Guardar(a.dir); err != nil {
@@ -157,6 +158,75 @@ func (a *Aplicador) aplicarBloqueoSesion(p *contract.Policy) {
 	}
 	a.log.Info().Int("minutos", p.Session.LockAfterMinutes).
 		Msg("bloqueo de sesion por inactividad aplicado")
+}
+
+/* --------------------------------------------------------------- Redes --- */
+
+const (
+	// Windows Connection Manager. fMinimizeConnections=1 desconecta WiFi/celular
+	// cuando hay un enlace cableado activo; si el cable cae, Windows reconecta la
+	// WiFi solo. Es la salvaguarda "solo si hay cable" impuesta por el propio SO.
+	claveWCM = `SOFTWARE\Policies\Microsoft\Windows\WcmSvc\GroupPolicy`
+
+	// Servicio de soporte de Bluetooth. Start=4 lo deshabilita (mismo mecanismo
+	// que el bloqueo de USBSTOR).
+	claveBthserv  = `SYSTEM\CurrentControlSet\Services\bthserv`
+	bthservManual = 3
+	bthservDeshab = 4
+)
+
+// aplicarRed impone el bloqueo de conexiones. El cableado NUNCA se toca.
+func (a *Aplicador) aplicarRed(p *contract.Policy, estado *Estado) {
+	k, _, err := registry.CreateKey(registry.LOCAL_MACHINE, claveWCM, registry.SET_VALUE)
+	if err != nil {
+		a.log.Warn().Err(err).Msg("no se pudo abrir la politica de conexiones (WCM)")
+	} else {
+		if p.Network.MinimizeWhenWired {
+			_ = k.SetDWordValue("fMinimizeConnections", 1)
+		} else {
+			_ = k.DeleteValue("fMinimizeConnections")
+		}
+		if p.Network.BlockNonDomain {
+			_ = k.SetDWordValue("fBlockNonDomain", 1)
+		} else {
+			_ = k.DeleteValue("fBlockNonDomain")
+		}
+		_ = k.Close()
+		if p.Network.MinimizeWhenWired || p.Network.BlockNonDomain {
+			a.log.Info().Bool("minimizar", p.Network.MinimizeWhenWired).
+				Bool("no_dominio", p.Network.BlockNonDomain).
+				Msg("politica de conexiones aplicada (WiFi/celular)")
+		}
+	}
+
+	a.aplicarBluetooth(p.Network.BlockBluetooth, estado)
+}
+
+// aplicarBluetooth deshabilita o restaura el servicio de Bluetooth. Anota el
+// valor original la PRIMERA vez que se deshabilita —igual que USBSTOR— para no
+// dejar Bluetooth encendido en un equipo donde el cliente lo tenia apagado.
+func (a *Aplicador) aplicarBluetooth(bloquear bool, estado *Estado) {
+	if bloquear {
+		if estado.BthservStart < 0 {
+			if v, ok := leerDword(registry.LOCAL_MACHINE, claveBthserv, "Start"); ok {
+				estado.BthservStart = int(v)
+			} else {
+				// No se pudo leer (¿sin Bluetooth?). Se marca con el valor por
+				// defecto para que la reversion no lo deje deshabilitado.
+				estado.BthservStart = bthservManual
+			}
+		}
+		if err := escribirDword(registry.LOCAL_MACHINE, claveBthserv, "Start", bthservDeshab); err != nil {
+			a.log.Warn().Err(err).Msg("no se pudo deshabilitar Bluetooth")
+		}
+		return
+	}
+	// No se pide bloquear: si en algun momento lo deshabilitamos, restaurar y
+	// olvidar, para que un cambio de politica reactive el Bluetooth.
+	if estado.BthservStart >= 0 {
+		_ = escribirDword(registry.LOCAL_MACHINE, claveBthserv, "Start", uint32(estado.BthservStart))
+		estado.BthservStart = -1
+	}
 }
 
 /* ----------------------------------------------------------------- USB --- */
@@ -388,6 +458,14 @@ func (a *Aplicador) Revertir() {
 	// intenta restaurar un valor previo del cliente: es una directiva que casi
 	// nunca viene puesta de fabrica, y dejar 0 es el estado neutro de Windows.
 	_ = borrarValor(registry.LOCAL_MACHINE, claveInactividad, valorInactividad)
+
+	// Redes: se quitan las directivas de conexiones y se restaura Bluetooth a su
+	// valor original si lo habiamos deshabilitado.
+	_ = borrarValor(registry.LOCAL_MACHINE, claveWCM, "fMinimizeConnections")
+	_ = borrarValor(registry.LOCAL_MACHINE, claveWCM, "fBlockNonDomain")
+	if estado.BthservStart >= 0 {
+		_ = escribirDword(registry.LOCAL_MACHINE, claveBthserv, "Start", uint32(estado.BthservStart))
+	}
 
 	a.vaciarCacheDNS()
 	_ = os.Remove(rutaEstado(a.dir))

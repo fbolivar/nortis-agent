@@ -250,6 +250,17 @@ type Policy struct {
 	Session struct {
 		LockAfterMinutes int `json:"lock_after_minutes"`
 	} `json:"session"`
+
+	// Network gobierna el bloqueo de conexiones. El cableado NUNCA se bloquea: es
+	// el enlace por el que se administra el equipo, y cortarlo lo dejaria
+	// incomunicado y fuera de alcance. WiFi/celular se restringen SOLO cuando hay
+	// cable activo (Windows Connection Manager: si el cable cae, reconectan
+	// solos). Bluetooth se deshabilita por servicio.
+	Network struct {
+		MinimizeWhenWired bool `json:"minimize_when_wired"`
+		BlockNonDomain    bool `json:"block_non_domain"`
+		BlockBluetooth    bool `json:"block_bluetooth"`
+	} `json:"network"`
 }
 
 type USBMode string
