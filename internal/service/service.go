@@ -28,6 +28,7 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/inventory"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/remoteexec"
+	"github.com/fbolivar/nortis-agent/internal/schedtask"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
 	"github.com/fbolivar/nortis-agent/internal/tamper"
 	"github.com/fbolivar/nortis-agent/internal/updater"
@@ -83,6 +84,9 @@ type Program struct {
 	// el ciclo de comandos y lo lee el vigilante de archivos.
 	restauros *enforce.RegistroRestauros
 
+	// programadas guarda los scripts recurrentes (schedule_script), persistidos.
+	programadas *schedtask.Store
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	cfg    agentcfg.Config
@@ -107,6 +111,7 @@ func NewProgram(cfg agentcfg.Config, agent *syncer.Agent, log zerolog.Logger) *P
 		),
 		clasificador: classify.Nuevo(),
 		restauros:    enforce.NuevoRegistroRestauros(),
+		programadas:  schedtask.Abrir(agentcfg.Dir()),
 	}
 }
 
@@ -128,7 +133,7 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(11)
+	p.wg.Add(13)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
@@ -161,6 +166,12 @@ func (p *Program) Start(s service.Service) error {
 	// que la consola unicamente entrega con consentimiento firmado del tenant. Sin
 	// el flag, capturaOnce no toca la pantalla.
 	go p.loop(ctx, "captura", 30*time.Minute, p.capturaOnce)
+	// Control por horario: cada minuto, si la politica lo pide y estamos fuera de
+	// la franja laboral, se bloquea la sesion. Cada minuto para que reintente si
+	// el usuario vuelve a entrar.
+	go p.loop(ctx, "horario", time.Minute, p.horarioOnce)
+	// Scripts recurrentes: cada minuto se revisa cuales toca ejecutar.
+	go p.loop(ctx, "programadas", time.Minute, p.programadasOnce)
 
 	p.arrancarRecolectores(ctx)
 
@@ -376,6 +387,35 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		code, out, err := remoteexec.EjecutarUninstall(ctx, payload)
 		p.terminarTarea(ctx, t, code, out, err)
 
+	case "wake":
+		payload, err := remoteexec.ParseWake(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarWake(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "schedule_script":
+		payload, err := remoteexec.ParseScheduleScript(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		p.programadas.Aplicar(schedtask.Programada{
+			ID: payload.ID, Interpreter: payload.Interpreter, Script: payload.Script,
+			EveryMinutes: payload.EveryMinutes, NotAfter: payload.NotAfter,
+		})
+		msg := "programacion guardada"
+		if payload.EveryMinutes <= 0 {
+			msg = "programacion eliminada"
+		}
+		p.terminarTarea(ctx, t, 0, msg, nil)
+
 	case "run_script":
 		payload, err := remoteexec.ParseRunScript(t.Payload)
 		if err != nil {
@@ -468,6 +508,77 @@ func (p *Program) capturaOnce(ctx context.Context) {
 		return
 	}
 	p.log.Info().Int("bytes", len(png)).Msg("captura de pantalla enviada")
+}
+
+// horarioOnce bloquea la sesion si la politica de horario esta activa y estamos
+// FUERA de la franja laboral. Se ejecuta cada minuto: si el usuario vuelve a
+// entrar fuera de horario, se le bloquea de nuevo.
+func (p *Program) horarioOnce(ctx context.Context) {
+	pol := p.agent.Policy()
+	if pol == nil || !pol.WorkHours.Enabled {
+		return
+	}
+	if dentroDeHorario(pol.WorkHours.Days, pol.WorkHours.Start, pol.WorkHours.End, time.Now()) {
+		return
+	}
+	if _, _, err := remoteexec.EjecutarLock(ctx); err != nil {
+		p.log.Debug().Err(err).Msg("no se pudo bloquear por fuera de horario")
+	}
+}
+
+// dentroDeHorario indica si `now` cae dentro del horario laboral permitido. Days:
+// 1=lunes..7=domingo. Start/End: "HH:MM". Sin horas validas, no se bloquea.
+func dentroDeHorario(days []int, start, end string, now time.Time) bool {
+	dia := int(now.Weekday())
+	if dia == 0 { // time.Sunday == 0 -> 7
+		dia = 7
+	}
+	enDia := false
+	for _, d := range days {
+		if d == dia {
+			enDia = true
+			break
+		}
+	}
+	if !enDia {
+		return false
+	}
+	ini, ok1 := minutosDeHora(start)
+	fin, ok2 := minutosDeHora(end)
+	if !ok1 || !ok2 {
+		return true
+	}
+	m := now.Hour()*60 + now.Minute()
+	if ini <= fin {
+		return m >= ini && m <= fin
+	}
+	// Franja que cruza medianoche (p. ej. turno de noche 22:00-06:00).
+	return m >= ini || m <= fin
+}
+
+func minutosDeHora(s string) (int, bool) {
+	var h, mm int
+	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%d:%d", &h, &mm); err != nil {
+		return 0, false
+	}
+	if h < 0 || h > 23 || mm < 0 || mm > 59 {
+		return 0, false
+	}
+	return h*60 + mm, true
+}
+
+// programadasOnce ejecuta los scripts recurrentes que ya toca correr.
+func (p *Program) programadasOnce(ctx context.Context) {
+	for _, pr := range p.programadas.Vencidas(time.Now()) {
+		code, _, err := remoteexec.EjecutarRunScript(ctx, remoteexec.RunScriptPayload{
+			Interpreter: pr.Interpreter, Script: pr.Script,
+		})
+		if err != nil {
+			p.log.Warn().Err(err).Str("id", pr.ID).Int("code", code).Msg("script programado fallo")
+		} else {
+			p.log.Info().Str("id", pr.ID).Int("code", code).Msg("script programado ejecutado")
+		}
+	}
 }
 
 // actualizarOnce pregunta a la consola si hay version nueva y, si la hay y es
