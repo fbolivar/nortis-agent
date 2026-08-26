@@ -4,6 +4,7 @@ package collector
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/rs/zerolog"
 
@@ -58,12 +59,30 @@ func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta 
 	}
 	dirCuarentena := filepath.Join(agentcfg.Dir(), "cuarentena")
 
+	// cuarentenarClase decide, por la etiqueta de un archivo, si su clase esta
+	// vigilada con modo cuarentena en la politica vigente. Se lee de la politica
+	// en caliente, igual que las carpetas: cambiar la lista en la consola surte
+	// efecto en el siguiente latido sin reiniciar el agente.
+	cuarentenarClase := func(clase string) bool {
+		p := politica()
+		if p == nil || p.Classification.Mode != contract.ClassificationQuarantine {
+			return false
+		}
+		for _, w := range p.Classification.Watched {
+			if strings.EqualFold(strings.TrimSpace(w), clase) {
+				return true
+			}
+		}
+		return false
+	}
+
 	// El colector de archivos ademas etiqueta por contenido (Fase B) cuando hay
 	// reglas cargadas; sin reglas, `clasificar` devuelve "" y no inspecciona nada.
 	archivos := NewFilesCollector(log, rutasPolitica, allowed, dirCuarentena)
 	if clasificar != nil {
 		archivos.UsarClasificador(clasificar)
 	}
+	archivos.UsarCuarentenaClase(cuarentenarClase)
 
 	return []Collector{
 		NewSessionCollector(log),

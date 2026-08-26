@@ -33,6 +33,29 @@ func TestDebeCuarentenar(t *testing.T) {
 	}
 }
 
+func TestRutaRemediable(t *testing.T) {
+	// La cuarentena por CLASE de dato no mira allowed_paths ni extension, pero
+	// comparte esta guarda: nunca rutas del sistema, temporales o del propio
+	// Nortis, aunque el archivo se haya clasificado como sensible.
+	casos := []struct {
+		ruta   string
+		quiero bool
+	}{
+		{`C:\Operaciones\nomina.txt`, true},
+		{`C:\Users\ana\Desktop\cedulas.txt`, true},
+		{`E:\salida\clientes.csv`, true},
+		{`C:\Users\ana\AppData\Local\Temp\algo.txt`, false},
+		{`C:\Windows\System32\drivers\etc\hosts`, false},
+		{`C:\ProgramData\Nortis\Agent\cola.txt`, false},
+		{`C:\Program Files\App\config.txt`, false},
+	}
+	for _, c := range casos {
+		if got := RutaRemediable(c.ruta); got != c.quiero {
+			t.Errorf("RutaRemediable(%q)=%v; quiero %v", c.ruta, got, c.quiero)
+		}
+	}
+}
+
 func TestSinCarpetasPermitidasNoRemedia(t *testing.T) {
 	// Sin allowed_paths la regla no aplica: nada se retira, aunque sea un
 	// documento en cualquier sitio.
