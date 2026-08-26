@@ -367,3 +367,14 @@ func (a *Agent) Clasificaciones(ctx context.Context) (contract.ClasificacionesRe
 	}
 	return a.client.Clasificaciones(ctx, endpointID)
 }
+
+// ReportarInventario envia el inventario (no hace nada si aun no hay endpoint).
+func (a *Agent) ReportarInventario(ctx context.Context, hw map[string]any, sw []contract.SoftwareItem) error {
+	endpointID := a.EndpointID()
+	if endpointID == "" {
+		return nil
+	}
+	return a.client.ReportarInventario(ctx, contract.InventoryRequest{
+		EndpointID: endpointID, Hardware: hw, Software: sw,
+	})
+}

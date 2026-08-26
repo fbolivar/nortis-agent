@@ -383,3 +383,21 @@ type Clasificacion struct {
 type ClasificacionesResponse struct {
 	Classifications []Clasificacion `json:"classifications"`
 }
+
+// --- Inventario de software y hardware ---
+
+// SoftwareItem es un programa instalado. Solo metadatos: nombre, version,
+// publicador; nunca rutas ni contenido.
+type SoftwareItem struct {
+	Name      string `json:"name"`
+	Version   string `json:"version,omitempty"`
+	Publisher string `json:"publisher,omitempty"`
+}
+
+// InventoryRequest reporta el inventario completo del equipo. El software se
+// REEMPLAZA en el servidor con esta lista (un programa desinstalado desaparece).
+type InventoryRequest struct {
+	EndpointID string         `json:"endpoint_id"`
+	Hardware   map[string]any `json:"hardware"`
+	Software   []SoftwareItem `json:"software"`
+}
