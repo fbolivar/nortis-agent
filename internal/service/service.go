@@ -24,6 +24,7 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/collector"
 	"github.com/fbolivar/nortis-agent/internal/contract"
 	"github.com/fbolivar/nortis-agent/internal/enforce"
+	"github.com/fbolivar/nortis-agent/internal/inventory"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
 	"github.com/fbolivar/nortis-agent/internal/remoteexec"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
@@ -126,7 +127,7 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(9)
+	p.wg.Add(10)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
@@ -151,6 +152,10 @@ func (p *Program) Start(s service.Service) error {
 	// tenant no firmo consentimiento, la consola devuelve la lista vacia y el
 	// agente deja de inspeccionar contenido.
 	go p.loop(ctx, "clasificacion", 15*time.Minute, p.clasificacionOnce)
+	// Inventario de software y hardware: cambia despacio, asi que un barrido cada
+	// 6 horas sobra. La primera pasada es al arrancar, para que un equipo recien
+	// enrolado aparezca en el inventario sin esperar.
+	go p.loop(ctx, "inventario", 6*time.Hour, p.inventarioOnce)
 
 	p.arrancarRecolectores(ctx)
 
@@ -341,6 +346,19 @@ func (p *Program) clasificacionOnce(ctx context.Context) {
 		p.log.Info().Int("reglas", len(defs)).Str("clases", classify.NombresDe(defs)).
 			Msg("clasificacion por contenido activa")
 	}
+}
+
+// inventarioOnce recolecta el software y hardware del equipo y lo reporta. El
+// software se reemplaza entero en el servidor, asi que un programa desinstalado
+// desaparece del inventario sin logica extra. Solo metadatos: nombres y
+// versiones, nunca rutas ni contenido.
+func (p *Program) inventarioOnce(ctx context.Context) {
+	hw, sw := inventory.Recolectar()
+	if err := p.agent.ReportarInventario(ctx, hw, sw); err != nil {
+		p.log.Debug().Err(err).Msg("no se pudo reportar el inventario")
+		return
+	}
+	p.log.Info().Int("programas", len(sw)).Msg("inventario reportado")
 }
 
 // actualizarOnce pregunta a la consola si hay version nueva y, si la hay y es

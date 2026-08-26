@@ -344,3 +344,11 @@ func (c *Client) Clasificaciones(ctx context.Context, endpointID string) (contra
 		contract.ClasificacionesRequest{EndpointID: endpointID}, &out)
 	return out, err
 }
+
+// ReportarInventario envia el inventario de software y hardware del equipo.
+func (c *Client) ReportarInventario(ctx context.Context, req contract.InventoryRequest) error {
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	return c.post(ctx, "/api/agent/inventory", c.endpointCredential(), req, &out)
+}
