@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"os"
 	"os/exec"
 	"runtime"
@@ -30,7 +31,71 @@ import (
 func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	hw := recolectarHardware()
 	estadoCifrado(ctx, hw)
+	hw["network"] = recolectarRed(ctx)
 	return hw, recolectarSoftware()
+}
+
+// recolectarRed devuelve las interfaces de red activas (IP y MAC) y, si el equipo
+// esta en WiFi, el nombre de la red. Solo datos de red del propio equipo; nunca
+// trafico ni contenido. La IP publica NO se resuelve aqui: la anota el servidor a
+// partir del origen de la peticion, que es quien la ve de verdad.
+func recolectarRed(ctx context.Context) map[string]any {
+	red := map[string]any{}
+
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		lista := make([]map[string]any, 0, len(ifaces))
+		for _, ifc := range ifaces {
+			if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			var ip string
+			addrs, _ := ifc.Addrs()
+			for _, a := range addrs {
+				if ipnet, ok := a.(*net.IPNet); ok && ipnet.IP.To4() != nil && !ipnet.IP.IsLoopback() {
+					ip = ipnet.IP.String()
+					break
+				}
+			}
+			if ip == "" {
+				continue
+			}
+			lista = append(lista, map[string]any{
+				"name": ifc.Name,
+				"ip":   ip,
+				"mac":  ifc.HardwareAddr.String(),
+			})
+		}
+		red["interfaces"] = lista
+	}
+
+	if ssid := wifiSSID(ctx); ssid != "" {
+		red["wifi_ssid"] = ssid
+	}
+	return red
+}
+
+// wifiSSID devuelve el nombre de la red WiFi conectada, o "" si no hay o no se
+// pudo leer. Se apoya en `netsh wlan show interfaces`; el nombre del campo SSID
+// no se traduce, asi que el parseo es estable entre idiomas.
+func wifiSSID(ctx context.Context) string {
+	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx2, "netsh", "wlan", "show", "interfaces").Output()
+	if err != nil {
+		return ""
+	}
+	for _, linea := range strings.Split(string(out), "\n") {
+		t := strings.TrimSpace(linea)
+		// "SSID  : MiRed" pero NO "BSSID : ..".
+		if strings.HasPrefix(t, "SSID") && !strings.HasPrefix(t, "BSSID") {
+			if i := strings.Index(t, ":"); i >= 0 {
+				return strings.TrimSpace(t[i+1:])
+			}
+		}
+	}
+	return ""
 }
 
 // clavesDesinstalacion son las tres vistas del registro donde Windows anota los
