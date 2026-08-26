@@ -128,6 +128,15 @@ linters:
         linters:
           - gosec
 
+      # La ejecucion remota lanza msiexec con argumentos que vienen de la consola
+      # (G204) y descarga el MSI por una URL variable (G107): ES el proposito del
+      # feature. La seguridad no la da gosec aqui sino la FIRMA Ed25519 que se
+      # verifica antes de ejecutar y el sha256 del artefacto. Ver remoteexec.
+      - path: internal/remoteexec/
+        text: "G107|G204"
+        linters:
+          - gosec
+
 formatters:
   enable:
     - gofmt

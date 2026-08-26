@@ -320,3 +320,19 @@ func (c *Client) ReportarComando(ctx context.Context, req contract.ReportarComan
 	}
 	return c.post(ctx, "/api/agent/commands/result", c.endpointCredential(), req, &out)
 }
+
+// PollTareas reclama las tareas pendientes del equipo.
+func (c *Client) PollTareas(ctx context.Context, endpointID string) (contract.PollTareasResponse, error) {
+	var out contract.PollTareasResponse
+	err := c.post(ctx, "/api/agent/tasks", c.endpointCredential(),
+		contract.PollTareasRequest{EndpointID: endpointID}, &out)
+	return out, err
+}
+
+// ReportarTarea informa el resultado de ejecutar una tarea.
+func (c *Client) ReportarTarea(ctx context.Context, req contract.ReportarTareaRequest) error {
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	return c.post(ctx, "/api/agent/tasks/result", c.endpointCredential(), req, &out)
+}

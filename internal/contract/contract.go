@@ -295,3 +295,36 @@ type ReportarComandoRequest struct {
 	Status     string `json:"status"` // done | failed
 	Error      string `json:"error,omitempty"`
 }
+
+// --- Canal de tareas consola -> agente (ejecucion remota administrada) ---
+
+// PollTareasRequest pide las tareas pendientes de este equipo.
+type PollTareasRequest struct {
+	EndpointID string `json:"endpoint_id"`
+}
+
+// Tarea es una accion administrativa FIRMADA que la consola encarga al agente.
+// El agente verifica `Signature` (Ed25519 de la consola) sobre los bytes
+// canonicos antes de ejecutar nada; sin firma valida no se ejecuta.
+type Tarea struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // install_msi | push_file | restart
+	Payload   string `json:"payload"`
+	ExpiresAt string `json:"expires_at"`
+	Signature string `json:"signature"`
+}
+
+// PollTareasResponse es la lista de tareas pendientes.
+type PollTareasResponse struct {
+	Tasks []Tarea `json:"tasks"`
+}
+
+// ReportarTareaRequest informa el resultado de ejecutar una tarea.
+type ReportarTareaRequest struct {
+	EndpointID string `json:"endpoint_id"`
+	TaskID     string `json:"task_id"`
+	Status     string `json:"status"` // running | done | failed
+	ExitCode   *int   `json:"exit_code,omitempty"`
+	Output     string `json:"output,omitempty"`
+	Error      string `json:"error,omitempty"`
+}

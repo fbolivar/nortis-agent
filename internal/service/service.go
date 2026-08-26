@@ -24,6 +24,7 @@ import (
 	"github.com/fbolivar/nortis-agent/internal/contract"
 	"github.com/fbolivar/nortis-agent/internal/enforce"
 	"github.com/fbolivar/nortis-agent/internal/machineid"
+	"github.com/fbolivar/nortis-agent/internal/remoteexec"
 	"github.com/fbolivar/nortis-agent/internal/syncer"
 	"github.com/fbolivar/nortis-agent/internal/tamper"
 	"github.com/fbolivar/nortis-agent/internal/updater"
@@ -113,7 +114,7 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(7)
+	p.wg.Add(8)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
@@ -130,6 +131,10 @@ func (p *Program) Start(s service.Service) error {
 	// menudo porque una restauracion la pide un humano que espera verla aplicada:
 	// un minuto es la latencia maxima aceptable sin castigar la red del equipo.
 	go p.loop(ctx, "comandos", time.Minute, p.comandosOnce)
+	// Tareas de ejecucion remota (instalar MSI, etc.). Se consultan cada minuto:
+	// un despliegue lo lanza un humano que espera verlo aplicado. Cada tarea se
+	// verifica contra la firma de la consola antes de ejecutar nada.
+	go p.loop(ctx, "tareas", time.Minute, p.tareasOnce)
 
 	p.arrancarRecolectores(ctx)
 
@@ -193,6 +198,73 @@ func (p *Program) comandosOnce(ctx context.Context) {
 			p.log.Warn().Err(rerr).Msg("no se pudo reportar el resultado del comando")
 		}
 	}
+}
+
+// tareasOnce reclama las tareas de ejecucion remota pendientes y las ejecuta.
+// La firma de la consola es la UNICA puerta: una tarea que no verifica —incluida
+// una fila inyectada en la base sin firma valida— se rechaza y se reporta, nunca
+// se ejecuta.
+func (p *Program) tareasOnce(ctx context.Context) {
+	resp, err := p.agent.PollTareas(ctx)
+	if err != nil {
+		p.log.Debug().Err(err).Msg("no se pudieron consultar tareas")
+		return
+	}
+	if len(resp.Tasks) == 0 {
+		return
+	}
+
+	pub, err := tamper.ClavePublicaConsola(agentcfg.Dir())
+	if err != nil {
+		// Sin clave publica no se puede verificar nada; no se ejecuta ninguna
+		// tarea. Es el lado seguro del fallo.
+		p.log.Warn().Err(err).Msg("sin clave publica de la consola; no se ejecutan tareas")
+		return
+	}
+	endpointID := p.agent.EndpointID()
+
+	for _, t := range resp.Tasks {
+		if err := remoteexec.VerificarFirma(pub, endpointID, t.Kind, t.Payload, t.Signature); err != nil {
+			p.log.Warn().Err(err).Str("task", t.ID).Msg("tarea con firma invalida, rechazada")
+			_ = p.agent.ReportarTarea(ctx, t.ID, "failed", nil, "", "firma invalida: "+err.Error())
+			continue
+		}
+		p.ejecutarTarea(ctx, t)
+	}
+}
+
+// ejecutarTarea corre una tarea YA verificada segun su tipo y reporta el
+// resultado (exit code + salida). Fase 1: solo install_msi.
+func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
+	_ = p.agent.ReportarTarea(ctx, t.ID, "running", nil, "", "")
+
+	switch t.Kind {
+	case "install_msi":
+		payload, err := remoteexec.ParseInstallMSI(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarInstallMSI(ctx, payload)
+		if err != nil {
+			p.log.Warn().Err(err).Int("code", code).Str("task", t.ID).Msg("install_msi fallo")
+			_ = p.agent.ReportarTarea(ctx, t.ID, "failed", &code, out, err.Error())
+			return
+		}
+		p.log.Info().Int("code", code).Str("task", t.ID).Msg("install_msi aplicado")
+		_ = p.agent.ReportarTarea(ctx, t.ID, "done", &code, out, "")
+	default:
+		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
+	}
+}
+
+func (p *Program) fallarTarea(ctx context.Context, t contract.Tarea, err error) {
+	p.log.Warn().Err(err).Str("task", t.ID).Str("kind", t.Kind).Msg("tarea fallida")
+	_ = p.agent.ReportarTarea(ctx, t.ID, "failed", nil, "", err.Error())
 }
 
 // actualizarOnce pregunta a la consola si hay version nueva y, si la hay y es
