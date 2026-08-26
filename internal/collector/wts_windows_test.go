@@ -66,7 +66,7 @@ func TestEnumerarSesionesDevuelveValoresPlausibles(t *testing.T) {
 // proceso -> sesion funciona: sin ella, todos los procesos caerian en la sesion 0
 // y no se reportaria ni una sola aplicacion.
 func TestEnumerarProcesosDevuelveLaSesionInteractiva(t *testing.T) {
-	c := NewAppsCollector(zerolog.Nop())
+	c := NewAppsCollector(zerolog.Nop(), nil)
 
 	procesos, err := c.enumerar()
 	if err != nil {
