@@ -79,6 +79,31 @@ func TestBajoAlgunaNormaliza(t *testing.T) {
 	}
 }
 
+func TestRegistroRestauros(t *testing.T) {
+	base := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	r := NuevoRegistroRestauros()
+
+	// Sin marcar: nada es reciente.
+	if r.Reciente(`C:\Operaciones\a.txt`, base) {
+		t.Fatal("una ruta no marcada no debe ser reciente")
+	}
+
+	r.Marcar(`C:\Operaciones\a.txt`, 5*time.Minute, base)
+
+	// Dentro de la ventana: reciente (aunque cambie mayusculas/barras).
+	if !r.Reciente(`c:\operaciones\a.txt`, base.Add(2*time.Minute)) {
+		t.Error("dentro de la ventana debe seguir siendo reciente (normalizado)")
+	}
+	// Otra ruta no se ve afectada.
+	if r.Reciente(`C:\Operaciones\b.txt`, base.Add(1*time.Minute)) {
+		t.Error("marcar una ruta no debe afectar a otra")
+	}
+	// Pasada la ventana: ya no.
+	if r.Reciente(`C:\Operaciones\a.txt`, base.Add(6*time.Minute)) {
+		t.Error("vencida la ventana, ya no debe ser reciente")
+	}
+}
+
 func TestPurgarCuarentena(t *testing.T) {
 	dir := t.TempDir()
 	ahora := time.Now()
