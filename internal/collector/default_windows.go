@@ -89,7 +89,7 @@ func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta 
 
 	return []Collector{
 		NewSessionCollector(log),
-		NewAppsCollector(log),
+		NewAppsCollector(log, politica),
 		NewUSBCollector(log, politica),
 		archivos,
 		NewWebCollector(log, politica),

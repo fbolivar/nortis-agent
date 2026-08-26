@@ -271,7 +271,24 @@ type Policy struct {
 		Watched []string           `json:"watched"`
 		Mode    ClassificationMode `json:"mode"`
 	} `json:"classification"`
+
+	// Apps gobierna el control de aplicaciones. Con un modo distinto de allow, un
+	// proceso de la blocklist dispara un incidente ('alert') y, en 'block', el
+	// agente lo TERMINA. Es mitigacion, no prevencion: el proceso alcanza a
+	// arrancar y se cierra enseguida (modo usuario, sin driver de kernel).
+	Apps struct {
+		Mode      AppsMode `json:"mode"`
+		Blocklist []string `json:"blocklist"`
+	} `json:"apps"`
 }
+
+type AppsMode string
+
+const (
+	AppsAllow AppsMode = "allow"
+	AppsAlert AppsMode = "alert"
+	AppsBlock AppsMode = "block"
+)
 
 type ClassificationMode string
 

@@ -11,6 +11,8 @@ import (
 
 	"github.com/rs/zerolog"
 	"golang.org/x/sys/windows"
+
+	"github.com/fbolivar/nortis-agent/internal/contract"
 )
 
 // IntervaloApps es cada cuanto se enumeran los procesos.
@@ -23,17 +25,61 @@ const IntervaloApps = time.Minute
 
 var procProcessIdToSessionId = windows.NewLazySystemDLL("kernel32.dll").NewProc("ProcessIdToSessionId")
 
-// AppsCollector reporta que aplicaciones abre cada usuario.
+// AppsCollector reporta que aplicaciones abre cada usuario y, si la politica lo
+// pide, controla (alerta o termina) las de la lista de bloqueo.
 type AppsCollector struct {
-	log     zerolog.Logger
-	maquina *maquinaApps
+	log      zerolog.Logger
+	maquina  *maquinaApps
+	politica func() *contract.Policy
 }
 
-func NewAppsCollector(log zerolog.Logger) *AppsCollector {
+func NewAppsCollector(log zerolog.Logger, politica func() *contract.Policy) *AppsCollector {
 	return &AppsCollector{
-		log:     log.With().Str("recolector", "apps").Logger(),
-		maquina: nuevaMaquinaApps(),
+		log:      log.With().Str("recolector", "apps").Logger(),
+		maquina:  nuevaMaquinaApps(),
+		politica: politica,
 	}
+}
+
+// controlApp devuelve el modo de control para una app ("" si no se controla).
+// Nombre exacto del ejecutable, insensible a mayusculas.
+func (c *AppsCollector) controlApp(exe string) contract.AppsMode {
+	if c.politica == nil {
+		return ""
+	}
+	p := c.politica()
+	if p == nil || p.Apps.Mode == "" || p.Apps.Mode == contract.AppsAllow {
+		return ""
+	}
+	n := normalizar(exe)
+	for _, b := range p.Apps.Blocklist {
+		if normalizar(b) == n {
+			return p.Apps.Mode
+		}
+	}
+	return ""
+}
+
+// terminarApp mata todos los procesos cuyo ejecutable coincide con `exe`.
+// Devuelve cuantos cerro. El agente corre como SYSTEM, asi que puede terminar
+// procesos de la sesion del usuario.
+func (c *AppsCollector) terminarApp(procesos []proceso, exe string) int {
+	n := normalizar(exe)
+	muertos := 0
+	for _, p := range procesos {
+		if normalizar(p.Exe) != n {
+			continue
+		}
+		h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, p.PID)
+		if err != nil {
+			continue
+		}
+		if windows.TerminateProcess(h, 1) == nil {
+			muertos++
+		}
+		_ = windows.CloseHandle(h)
+	}
+	return muertos
 }
 
 func (c *AppsCollector) Name() string { return "apps" }
@@ -73,6 +119,24 @@ func (c *AppsCollector) sondear(emit Emit) {
 		c.log.Debug().Int("procesos", len(procesos)).Msg("estado inicial de aplicaciones registrado")
 		return
 	}
+
+	for i := range eventos {
+		app, _ := eventos[i].Payload["app"].(string)
+		modo := c.controlApp(app)
+		if modo == "" {
+			continue
+		}
+		if modo == contract.AppsBlock {
+			muertos := c.terminarApp(procesos, app)
+			eventos[i].Payload["enforcement"] = "terminated"
+			c.log.Warn().Str("app", app).Int("procesos", muertos).
+				Msg("aplicacion no autorizada: terminada")
+		} else {
+			eventos[i].Payload["enforcement"] = "alert"
+			c.log.Info().Str("app", app).Msg("aplicacion no autorizada: alertada")
+		}
+	}
+
 	for _, e := range eventos {
 		emit(e)
 	}
