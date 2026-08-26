@@ -353,7 +353,7 @@ func (p *Program) clasificacionOnce(ctx context.Context) {
 // desaparece del inventario sin logica extra. Solo metadatos: nombres y
 // versiones, nunca rutas ni contenido.
 func (p *Program) inventarioOnce(ctx context.Context) {
-	hw, sw := inventory.Recolectar()
+	hw, sw := inventory.Recolectar(ctx)
 	if err := p.agent.ReportarInventario(ctx, hw, sw); err != nil {
 		p.log.Debug().Err(err).Msg("no se pudo reportar el inventario")
 		return
