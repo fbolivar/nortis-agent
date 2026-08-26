@@ -111,6 +111,15 @@ linters:
         linters:
           - gosec
 
+      # El inventario lee valores del registro (donde la ausencia de un valor es
+      # normal, no un error que atender: G104) y consulta la memoria fisica con
+      # GlobalMemoryStatusEx pasando un puntero a estructura nativa (G103). Misma
+      # clase de codigo Win32 ya excluida en dpapi/collector/clipwatch.
+      - path: internal/inventory/
+        text: "G103|G104"
+        linters:
+          - gosec
+
       # Los colectores lanzan el proceso auxiliar en la sesion del usuario con la
       # ruta del propio ejecutable (G204) y leen archivos por rutas que reporta el
       # sistema de archivos, no una entrada de usuario (G304). Son inherentes a
