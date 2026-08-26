@@ -196,3 +196,29 @@ func moverArchivo(src, dst string) error {
 	_ = os.Remove(src)
 	return nil
 }
+
+// --- run_script: ejecutar un script firmado ---
+
+// RunScriptPayload es el contenido de una tarea run_script.
+type RunScriptPayload struct {
+	Interpreter string `json:"interpreter"` // powershell | cmd
+	Script      string `json:"script"`
+	NotAfter    int64  `json:"not_after"`
+}
+
+// ParseRunScript lee y valida el payload de una tarea run_script. Acota el
+// interprete a powershell o cmd: no se ejecuta un binario arbitrario nombrado
+// desde la consola, solo un script bajo un interprete conocido.
+func ParseRunScript(payload string) (RunScriptPayload, error) {
+	var p RunScriptPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload run_script ilegible: %w", err)
+	}
+	if p.Interpreter != "powershell" && p.Interpreter != "cmd" {
+		return p, fmt.Errorf("interprete no soportado: %q", p.Interpreter)
+	}
+	if strings.TrimSpace(p.Script) == "" {
+		return p, errors.New("script vacio")
+	}
+	return p, nil
+}
