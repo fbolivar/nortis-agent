@@ -336,3 +336,11 @@ func (c *Client) ReportarTarea(ctx context.Context, req contract.ReportarTareaRe
 	}
 	return c.post(ctx, "/api/agent/tasks/result", c.endpointCredential(), req, &out)
 }
+
+// Clasificaciones descarga las reglas de contenido para clasificar archivos.
+func (c *Client) Clasificaciones(ctx context.Context, endpointID string) (contract.ClasificacionesResponse, error) {
+	var out contract.ClasificacionesResponse
+	err := c.post(ctx, "/api/agent/classifications", c.endpointCredential(),
+		contract.ClasificacionesRequest{EndpointID: endpointID}, &out)
+	return out, err
+}

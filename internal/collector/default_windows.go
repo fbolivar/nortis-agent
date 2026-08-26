@@ -32,7 +32,7 @@ type PoliticaVigente func() *contract.Policy
 // exige consentimiento es el titulo de la ventana y la captura de pantalla, que
 // no se recolectan aqui y que el agente no activa por su cuenta bajo ninguna
 // circunstancia.
-func Default(log zerolog.Logger, politica PoliticaVigente) []Collector {
+func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta string) string) []Collector {
 	// Las carpetas de la politica se vigilan ADEMAS del perfil del usuario.
 	//
 	// `allowed_paths` puede parecer contraintuitivo —¿por que vigilar lo que
@@ -58,11 +58,18 @@ func Default(log zerolog.Logger, politica PoliticaVigente) []Collector {
 	}
 	dirCuarentena := filepath.Join(agentcfg.Dir(), "cuarentena")
 
+	// El colector de archivos ademas etiqueta por contenido (Fase B) cuando hay
+	// reglas cargadas; sin reglas, `clasificar` devuelve "" y no inspecciona nada.
+	archivos := NewFilesCollector(log, rutasPolitica, allowed, dirCuarentena)
+	if clasificar != nil {
+		archivos.UsarClasificador(clasificar)
+	}
+
 	return []Collector{
 		NewSessionCollector(log),
 		NewAppsCollector(log),
 		NewUSBCollector(log, politica),
-		NewFilesCollector(log, rutasPolitica, allowed, dirCuarentena),
+		archivos,
 		NewWebCollector(log, politica),
 		NewClipboardCollector(log, politica),
 		NewPrintCollector(log, politica),
