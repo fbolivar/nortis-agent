@@ -352,3 +352,11 @@ func (c *Client) ReportarInventario(ctx context.Context, req contract.InventoryR
 	}
 	return c.post(ctx, "/api/agent/inventory", c.endpointCredential(), req, &out)
 }
+
+// SubirCaptura envia una captura de pantalla (monitoreo con consentimiento).
+func (c *Client) SubirCaptura(ctx context.Context, req contract.ScreenshotRequest) error {
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	return c.post(ctx, "/api/agent/screenshot", c.endpointCredential(), req, &out)
+}
