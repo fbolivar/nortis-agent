@@ -137,6 +137,13 @@ linters:
         linters:
           - gosec
 
+      # La clasificacion por contenido abre el archivo que el colector detecto
+      # (G304): es su proposito. Lee un tope acotado y nunca saca el contenido.
+      - path: internal/classify/
+        text: "G304"
+        linters:
+          - gosec
+
 formatters:
   enable:
     - gofmt

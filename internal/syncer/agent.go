@@ -358,3 +358,12 @@ func (a *Agent) ReportarTarea(ctx context.Context, taskID, status string, exitCo
 		ExitCode: exitCode, Output: output, Error: msgErr,
 	})
 }
+
+// Clasificaciones descarga las reglas de contenido (vacio si aun no hay endpoint).
+func (a *Agent) Clasificaciones(ctx context.Context) (contract.ClasificacionesResponse, error) {
+	endpointID := a.EndpointID()
+	if endpointID == "" {
+		return contract.ClasificacionesResponse{}, nil
+	}
+	return a.client.Clasificaciones(ctx, endpointID)
+}

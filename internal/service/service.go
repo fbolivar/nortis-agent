@@ -20,6 +20,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/fbolivar/nortis-agent/internal/agentcfg"
+	"github.com/fbolivar/nortis-agent/internal/classify"
 	"github.com/fbolivar/nortis-agent/internal/collector"
 	"github.com/fbolivar/nortis-agent/internal/contract"
 	"github.com/fbolivar/nortis-agent/internal/enforce"
@@ -71,6 +72,10 @@ type Program struct {
 	// actualizador comprueba y aplica versiones nuevas publicadas en la consola.
 	actualizador *updater.Updater
 
+	// clasificador etiqueta archivos por su contenido (Fase B). Sus reglas se
+	// refrescan desde la consola; sin reglas no inspecciona nada.
+	clasificador *classify.Clasificador
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	cfg    agentcfg.Config
@@ -93,6 +98,7 @@ func NewProgram(cfg agentcfg.Config, agent *syncer.Agent, log zerolog.Logger) *P
 			agent.Version, contract.AgentVersion,
 			&http.Client{Timeout: 10 * time.Minute}, log,
 		),
+		clasificador: classify.Nuevo(),
 	}
 }
 
@@ -114,7 +120,7 @@ func (p *Program) Start(s service.Service) error {
 		p.log.Warn().Err(err).Msg("no se pudo restaurar el estado previo")
 	}
 
-	p.wg.Add(8)
+	p.wg.Add(9)
 	go p.loop(ctx, "sincronizacion", p.cfg.SyncInterval.Duration, p.syncOnce)
 	go p.loop(ctx, "latido", p.cfg.HeartbeatInterval.Duration, p.heartbeatOnce)
 	go p.loop(ctx, "politica", p.cfg.PolicyInterval.Duration, p.policyOnce)
@@ -135,6 +141,10 @@ func (p *Program) Start(s service.Service) error {
 	// un despliegue lo lanza un humano que espera verlo aplicado. Cada tarea se
 	// verifica contra la firma de la consola antes de ejecutar nada.
 	go p.loop(ctx, "tareas", time.Minute, p.tareasOnce)
+	// Reglas de clasificacion por contenido: se refrescan cada 15 min. Si el
+	// tenant no firmo consentimiento, la consola devuelve la lista vacia y el
+	// agente deja de inspeccionar contenido.
+	go p.loop(ctx, "clasificacion", 15*time.Minute, p.clasificacionOnce)
 
 	p.arrancarRecolectores(ctx)
 
@@ -303,6 +313,26 @@ func (p *Program) fallarTarea(ctx context.Context, t contract.Tarea, err error) 
 	_ = p.agent.ReportarTarea(ctx, t.ID, "failed", nil, "", err.Error())
 }
 
+// clasificacionOnce descarga las reglas de clasificacion por contenido y las
+// aplica al clasificador. La consola solo las entrega si hay consentimiento
+// firmado; sin reglas, el clasificador no inspecciona ningun archivo.
+func (p *Program) clasificacionOnce(ctx context.Context) {
+	resp, err := p.agent.Clasificaciones(ctx)
+	if err != nil {
+		p.log.Debug().Err(err).Msg("no se pudieron consultar las reglas de clasificacion")
+		return
+	}
+	defs := make([]classify.Definicion, 0, len(resp.Classifications))
+	for _, c := range resp.Classifications {
+		defs = append(defs, classify.Definicion{Nombre: c.Name, Patrones: c.ContentPatterns})
+	}
+	p.clasificador.Actualizar(defs)
+	if len(defs) > 0 {
+		p.log.Info().Int("reglas", len(defs)).Str("clases", classify.NombresDe(defs)).
+			Msg("clasificacion por contenido activa")
+	}
+}
+
 // actualizarOnce pregunta a la consola si hay version nueva y, si la hay y es
 // verificable, la aplica. Si la aplica, el proceso sera reemplazado por el
 // instalador; hasta entonces el resto del agente sigue funcionando.
@@ -408,7 +438,7 @@ func (p *Program) arrancarRecolectores(ctx context.Context) {
 	// La politica se pasa como funcion, no como valor: el administrador la edita
 	// en la consola y el agente la recarga en caliente, asi que un recolector que
 	// la copiara al arrancar seguiria aplicando la de hace tres horas.
-	for _, c := range collector.Default(p.log, p.agent.Policy) {
+	for _, c := range collector.Default(p.log, p.agent.Policy, p.clasificador.ClasificarArchivo) {
 		p.wg.Add(1)
 		go p.correrRecolector(ctx, c, emit)
 	}

@@ -52,6 +52,17 @@ type FilesCollector struct {
 	allowed func() []string
 	// dirCuarentena es donde se retiran los archivos remediados.
 	dirCuarentena string
+
+	// clasificar etiqueta el archivo por su contenido (Fase B). Nulo si no hay
+	// clasificacion por contenido configurada (o sin consentimiento). Devuelve la
+	// etiqueta, nunca el contenido.
+	clasificar func(ruta string) string
+}
+
+// UsarClasificador conecta la clasificacion de contenido: el colector añadira la
+// etiqueta a cada evento de archivo cuando la funcion devuelva una.
+func (c *FilesCollector) UsarClasificador(fn func(ruta string) string) {
+	c.clasificar = fn
 }
 
 func NewFilesCollector(log zerolog.Logger, rutasExtra, allowed func() []string, dirCuarentena string) *FilesCollector {
@@ -440,6 +451,15 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 							Msg("no se pudo retirar a cuarentena el documento fuera de carpeta permitida")
 					}
 				}
+
+				// Clasificacion por contenido (Fase B): solo lo que existe (no un
+				// borrado). Se añade la etiqueta al evento; el contenido nunca sale.
+				if c.clasificar != nil && cambio.Operacion != archivoEliminado {
+					if etiqueta := c.clasificar(cambio.Ruta); etiqueta != "" {
+						ev.Payload["classification"] = etiqueta
+					}
+				}
+
 				emit(*ev)
 			} else if recortado {
 				c.log.Warn().Str("ruta", raiz).

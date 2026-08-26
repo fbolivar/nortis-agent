@@ -347,3 +347,22 @@ type ReportarTareaRequest struct {
 	Output     string `json:"output,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
+
+// --- Clasificacion de datos por contenido (Fase B) ---
+
+// ClasificacionesRequest pide las reglas de contenido del equipo.
+type ClasificacionesRequest struct {
+	EndpointID string `json:"endpoint_id"`
+}
+
+// Clasificacion es una etiqueta con sus patrones de contenido (regex). El agente
+// los evalua localmente y reporta solo la etiqueta.
+type Clasificacion struct {
+	Name            string   `json:"name"`
+	ContentPatterns []string `json:"content_patterns"`
+}
+
+// ClasificacionesResponse es el juego de reglas de contenido vigente.
+type ClasificacionesResponse struct {
+	Classifications []Clasificacion `json:"classifications"`
+}
