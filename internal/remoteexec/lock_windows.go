@@ -37,25 +37,27 @@ const wtsActive = 0
 // remoto, el usuario no esta en la consola sino en una sesion RDP, y mirar solo
 // la consola devolvia "sin usuario" aunque hubiera alguien trabajando.
 func tokenUsuarioActivo() (windows.Token, uint32, error) {
-	var pSessions uintptr
+	// pSessions se declara como puntero TIPADO (no uintptr) para que el manejo del
+	// arreglo use unsafe.Slice en vez de aritmetica de punteros, que `go vet`
+	// marca como posible mal uso de unsafe.Pointer.
+	var pSessions *wtsSessionInfo
 	var count uint32
 	r, _, err := procWTSEnumerateSessions.Call(0, 0, 1,
 		uintptr(unsafe.Pointer(&pSessions)), uintptr(unsafe.Pointer(&count)))
 	if r == 0 {
 		return 0, 0, fmt.Errorf("no se pudieron enumerar las sesiones: %w", err)
 	}
-	defer func() { _, _, _ = procWTSFreeMemory.Call(pSessions) }()
+	defer func() { _, _, _ = procWTSFreeMemory.Call(uintptr(unsafe.Pointer(pSessions))) }()
 
-	tam := unsafe.Sizeof(wtsSessionInfo{})
-	for i := uint32(0); i < count; i++ {
-		si := (*wtsSessionInfo)(unsafe.Pointer(pSessions + uintptr(i)*tam))
-		if si.State != wtsActive {
+	sesiones := unsafe.Slice(pSessions, count)
+	for i := range sesiones {
+		if sesiones[i].State != wtsActive {
 			continue
 		}
 		var token windows.Token
-		ok, _, _ := procWTSQueryUserToken.Call(uintptr(si.SessionID), uintptr(unsafe.Pointer(&token)))
+		ok, _, _ := procWTSQueryUserToken.Call(uintptr(sesiones[i].SessionID), uintptr(unsafe.Pointer(&token)))
 		if ok != 0 {
-			return token, si.SessionID, nil
+			return token, sesiones[i].SessionID, nil
 		}
 	}
 	return 0, 0, fmt.Errorf("no hay una sesion de usuario activa")
