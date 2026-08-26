@@ -316,6 +316,66 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		code, out, err := remoteexec.EjecutarWipe(ctx, payload)
 		p.terminarTarea(ctx, t, code, out, err)
 
+	case "screenshot":
+		payload, err := remoteexec.ParseScreenshot(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		png, cErr := capture.Capturar(ctx)
+		if cErr != nil {
+			p.fallarTarea(ctx, t, cErr)
+			return
+		}
+		if uErr := p.agent.SubirCaptura(ctx, png); uErr != nil {
+			p.fallarTarea(ctx, t, uErr)
+			return
+		}
+		p.terminarTarea(ctx, t, 0, "captura enviada", nil)
+
+	case "message":
+		payload, err := remoteexec.ParseMessage(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarMensaje(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "kill":
+		payload, err := remoteexec.ParseKill(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarKill(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "uninstall":
+		payload, err := remoteexec.ParseUninstall(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarUninstall(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
 	case "run_script":
 		payload, err := remoteexec.ParseRunScript(t.Payload)
 		if err != nil {

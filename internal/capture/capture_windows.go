@@ -13,12 +13,11 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
-)
 
-var procWTSQueryUserToken = windows.NewLazySystemDLL("wtsapi32.dll").NewProc("WTSQueryUserToken")
+	"github.com/fbolivar/nortis-agent/internal/winsession"
+)
 
 // scriptCaptura pinta la pantalla virtual (todos los monitores) a un PNG en el
 // %TEMP% del usuario y escribe la ruta. Se ejecuta EN LA SESION DEL USUARIO —el
@@ -35,14 +34,11 @@ const scriptCaptura = `Add-Type -AssemblyName System.Windows.Forms,System.Drawin
 // Capturar devuelve el PNG de la pantalla del usuario, o error si no hay sesion
 // interactiva accesible (pantalla de bloqueo sin nadie, RDP cerrado, etc.).
 func Capturar(ctx context.Context) ([]byte, error) {
-	sesion := windows.WTSGetActiveConsoleSessionId()
-	if sesion == 0xFFFFFFFF {
-		return nil, fmt.Errorf("no hay una sesion de consola activa que capturar")
-	}
-	var token windows.Token
-	r, _, err := procWTSQueryUserToken.Call(uintptr(sesion), uintptr(unsafe.Pointer(&token)))
-	if r == 0 {
-		return nil, fmt.Errorf("no se pudo obtener el token de la sesion: %w", err)
+	// Sesion del usuario ACTIVO (consola o RDP): desde la sesion 0 la pantalla
+	// esta en negro, y mirar solo la consola fallaba en equipos por RDP.
+	token, _, err := winsession.TokenUsuarioActivo()
+	if err != nil {
+		return nil, fmt.Errorf("no hay una sesion de usuario activa que capturar: %w", err)
 	}
 	defer token.Close()
 

@@ -95,6 +95,80 @@ func ParseWipe(payload string) (WipePayload, error) {
 	return p, nil
 }
 
+// --- screenshot bajo demanda / message / kill / uninstall ---
+
+// ScreenshotPayload solo lleva caducidad; la captura la hace el agente.
+type ScreenshotPayload struct {
+	NotAfter int64 `json:"not_after"`
+}
+
+// ParseScreenshot lee el payload de una tarea screenshot.
+func ParseScreenshot(payload string) (ScreenshotPayload, error) {
+	var p ScreenshotPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload screenshot ilegible: %w", err)
+	}
+	return p, nil
+}
+
+// MessagePayload es un aviso que se muestra al usuario.
+type MessagePayload struct {
+	Title    string `json:"title"`
+	Body     string `json:"body"`
+	NotAfter int64  `json:"not_after"`
+}
+
+// ParseMessage valida el aviso: cuerpo obligatorio, longitudes acotadas.
+func ParseMessage(payload string) (MessagePayload, error) {
+	var p MessagePayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload message ilegible: %w", err)
+	}
+	if strings.TrimSpace(p.Body) == "" {
+		return p, errors.New("el mensaje no puede estar vacio")
+	}
+	if len(p.Title) > 200 || len(p.Body) > 2000 {
+		return p, errors.New("mensaje demasiado largo")
+	}
+	return p, nil
+}
+
+// KillPayload es el nombre del ejecutable a terminar.
+type KillPayload struct {
+	Name     string `json:"name"`
+	NotAfter int64  `json:"not_after"`
+}
+
+// ParseKill valida el nombre del proceso.
+func ParseKill(payload string) (KillPayload, error) {
+	var p KillPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload kill ilegible: %w", err)
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return p, errors.New("falta el nombre del proceso")
+	}
+	return p, nil
+}
+
+// UninstallPayload es el nombre EXACTO del programa (DisplayName) a desinstalar.
+type UninstallPayload struct {
+	Name     string `json:"name"`
+	NotAfter int64  `json:"not_after"`
+}
+
+// ParseUninstall valida el nombre del programa.
+func ParseUninstall(payload string) (UninstallPayload, error) {
+	var p UninstallPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload uninstall ilegible: %w", err)
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		return p, errors.New("falta el nombre del programa")
+	}
+	return p, nil
+}
+
 // descargarVerificado baja `url` a un archivo temporal con extension `ext` y
 // comprueba que su sha256 coincide con `shaHex`. Si no coincide, borra el archivo
 // y devuelve error: nunca se ejecuta un binario sin verificar su integridad.
