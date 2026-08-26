@@ -10,9 +10,14 @@
 package inventory
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -22,8 +27,10 @@ import (
 )
 
 // Recolectar devuelve el hardware (mapa suelto) y la lista de software instalado.
-func Recolectar() (map[string]any, []contract.SoftwareItem) {
-	return recolectarHardware(), recolectarSoftware()
+func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
+	hw := recolectarHardware()
+	estadoCifrado(ctx, hw)
+	return hw, recolectarSoftware()
 }
 
 // clavesDesinstalacion son las tres vistas del registro donde Windows anota los
@@ -161,4 +168,67 @@ func discoSistema() (total, libre uint64, ok bool) {
 		return 0, 0, false
 	}
 	return totalBytes, totalLibre, true
+}
+
+// volumenBitlocker es la forma que devuelve Get-BitLockerVolume (los campos que
+// nos interesan). ProtectionStatus: 1 = protegido/cifrado, 0 = no.
+type volumenBitlocker struct {
+	MountPoint           string  `json:"MountPoint"`
+	ProtectionStatus     int     `json:"ProtectionStatus"`
+	EncryptionPercentage float64 `json:"EncryptionPercentage"`
+}
+
+// estadoCifrado consulta BitLocker y anota en hw si el disco del sistema esta
+// cifrado (compliance). Se apoya en Get-BitLockerVolume de PowerShell: si el
+// equipo no tiene BitLocker (p. ej. Windows Home) o el cmdlet no existe, la orden
+// falla y simplemente no se anota nada —el panel lo mostrara como "sin datos"—.
+func estadoCifrado(ctx context.Context, hw map[string]any) {
+	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx2, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-Command",
+		"Get-BitLockerVolume -ErrorAction SilentlyContinue | "+
+			"Select-Object MountPoint,ProtectionStatus,EncryptionPercentage | ConvertTo-Json -Compress")
+	out, err := cmd.Output()
+	if err != nil {
+		return
+	}
+	trimmed := bytes.TrimSpace(out)
+	if len(trimmed) == 0 {
+		return
+	}
+
+	// ConvertTo-Json devuelve un objeto si hay un solo volumen y un arreglo si hay
+	// varios: se contemplan las dos formas.
+	var vols []volumenBitlocker
+	if trimmed[0] == '[' {
+		_ = json.Unmarshal(trimmed, &vols)
+	} else {
+		var uno volumenBitlocker
+		if json.Unmarshal(trimmed, &uno) == nil {
+			vols = []volumenBitlocker{uno}
+		}
+	}
+	if len(vols) == 0 {
+		return
+	}
+
+	sysDrive := os.Getenv("SystemDrive")
+	if sysDrive == "" {
+		sysDrive = "C:"
+	}
+	detalle := make([]map[string]any, 0, len(vols))
+	for _, v := range vols {
+		protegido := v.ProtectionStatus == 1
+		detalle = append(detalle, map[string]any{
+			"mount":     v.MountPoint,
+			"protected": protegido,
+			"percent":   v.EncryptionPercentage,
+		})
+		if strings.EqualFold(strings.TrimRight(v.MountPoint, `\`), sysDrive) {
+			hw["disk_encrypted"] = protegido
+		}
+	}
+	hw["encryption"] = detalle
 }
