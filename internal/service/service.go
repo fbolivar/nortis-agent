@@ -429,6 +429,19 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		code, out, err := remoteexec.EjecutarRunScript(ctx, payload)
 		p.terminarTarea(ctx, t, code, out, err)
 
+	case "scan_av":
+		payload, err := remoteexec.ParseScan(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarScan(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
 	default:
 		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
 	}
