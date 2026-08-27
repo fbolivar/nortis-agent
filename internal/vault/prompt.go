@@ -17,13 +17,14 @@ func leerLineaCruda() (string, error) {
 	for {
 		n, err := os.Stdin.Read(b[:])
 		if n > 0 {
-			switch b[0] {
+			c := b[0] // #nosec G602 -- b es un arreglo de tamaño 1; el indice 0 siempre existe
+			switch c {
 			case '\n':
 				return sb.String(), nil
 			case '\r':
 				// se ignora el retorno de carro (fin de linea de Windows)
 			default:
-				sb.WriteByte(b[0])
+				sb.WriteByte(c)
 			}
 		}
 		if err != nil {
