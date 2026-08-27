@@ -294,6 +294,10 @@ type Policy struct {
 		// solo se alertan (false, modo seguro para probar).
 		Allowlist        []string `json:"allowlist"`
 		AllowlistEnforce bool     `json:"allowlist_enforce"`
+		// BlockUnsigned: trata como no autorizada cualquier app SIN firma valida
+		// (aplica el modo vigente: alerta o cierra). Los ejecutables de blocklist
+		// y allowlist pueden nombrarse por .exe, por SHA-256 o por editor firmante.
+		BlockUnsigned bool `json:"block_unsigned"`
 	} `json:"apps"`
 
 	// WorkHours restringe el uso del equipo a un horario. Fuera de la franja (en
