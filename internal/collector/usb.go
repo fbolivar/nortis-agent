@@ -21,6 +21,9 @@ type volumen struct {
 	Etiqueta      string
 	CapacidadByte uint64
 	Usuario       string
+	// Cifrado indica si el volumen esta protegido con BitLocker. nil = no se pudo
+	// determinar (equipo sin BitLocker, lector de tarjetas, etc.).
+	Cifrado *bool
 }
 
 // SerialEfectivo es lo que viaja como `serial` en la telemetria.
@@ -100,6 +103,9 @@ func (m *maquinaUSB) observar(vols []volumen, enforcement string, ahora time.Tim
 		}
 		if v.Usuario != "" {
 			payload["user"] = v.Usuario
+		}
+		if v.Cifrado != nil {
+			payload["encrypted"] = *v.Cifrado
 		}
 
 		eventos = append(eventos, contract.Event{
