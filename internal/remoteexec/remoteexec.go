@@ -190,6 +190,26 @@ func ParseWake(payload string) (WakePayload, error) {
 	return p, nil
 }
 
+// --- scan_av: escaneo de antivirus bajo demanda ---
+
+// ScanPayload pide un escaneo de Windows Defender. Type: "quick" o "full".
+type ScanPayload struct {
+	Type     string `json:"type"`
+	NotAfter int64  `json:"not_after"`
+}
+
+// ParseScan valida el tipo de escaneo.
+func ParseScan(payload string) (ScanPayload, error) {
+	var p ScanPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload scan_av ilegible: %w", err)
+	}
+	if p.Type != "quick" && p.Type != "full" {
+		return p, fmt.Errorf("tipo de escaneo no soportado: %q", p.Type)
+	}
+	return p, nil
+}
+
 // --- schedule_script: script recurrente ---
 
 // ScheduleScriptPayload define un script que el agente ejecuta cada

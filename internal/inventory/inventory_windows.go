@@ -51,10 +51,11 @@ func uptimeSegundos() uint64 {
 // antivirus (Defender), cortafuegos por perfil y si hay un reinicio pendiente.
 // Cada bloque es tolerante a fallo (equipos sin Defender/NetSecurity) y sale como
 // JSON para que el servidor lo interprete.
-const scriptPostura = `$av=try{Get-MpComputerStatus -ErrorAction Stop|Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureAge}catch{$null};` +
+const scriptPostura = `$av=try{Get-MpComputerStatus -ErrorAction Stop|Select-Object AntivirusEnabled,RealTimeProtectionEnabled,AntivirusSignatureAge,QuickScanEndTime,FullScanEndTime}catch{$null};` +
 	`$fw=try{Get-NetFirewallProfile -ErrorAction Stop|Select-Object Name,Enabled}catch{$null};` +
+	`$th=try{Get-MpThreat -ErrorAction Stop|Sort-Object SeverityID -Descending|Select-Object -First 15 ThreatName,SeverityID,IsActive}catch{$null};` +
 	`$rb=(Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending');` +
-	`[pscustomobject]@{antivirus=$av;firewall=$fw;pending_reboot=[bool]$rb}|ConvertTo-Json -Compress -Depth 4`
+	`[pscustomobject]@{antivirus=$av;firewall=$fw;threats=$th;pending_reboot=[bool]$rb}|ConvertTo-Json -Compress -Depth 4`
 
 // posturaSeguridad devuelve el estado de seguridad como mapa suelto, o nil si no
 // se pudo consultar. Corre como SYSTEM (estado de maquina, no de sesion).
