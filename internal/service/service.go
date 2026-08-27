@@ -515,6 +515,32 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		out, err := p.ejecutarEDiscovery(ctx, payload)
 		p.terminarTarea(ctx, t, 0, out, err)
 
+	case "evidence_snapshot":
+		payload, err := remoteexec.ParseEvidenceSnapshot(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		// Foto CONGELADA con lo que el inventario ya sabe recolectar: procesos,
+		// puertos, autoarranque, cuentas, USB, postura. Se devuelve en el output de
+		// la tarea para adjuntarla al incidente (distinta del inventario en vivo).
+		hw, _ := inventory.Recolectar(ctx, p.agent.Policy().FIM.Paths)
+		snap := map[string]any{"captured_at": time.Now().UTC().Format(time.RFC3339)}
+		for _, k := range []string{
+			"runtime", "listening_ports", "shares", "autoruns",
+			"accounts", "usb_history", "security", "fim", "lan_hosts",
+		} {
+			if v, ok := hw[k]; ok {
+				snap[k] = v
+			}
+		}
+		out, _ := json.Marshal(snap)
+		p.terminarTarea(ctx, t, 0, string(out), nil)
+
 	default:
 		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
 	}
