@@ -443,8 +443,12 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		p.terminarTarea(ctx, t, code, out, err)
 
 	case "refresh_inventory":
-		// No lleva payload ni ejecutor externo: solo fuerza un barrido de
-		// inventario inmediato en vez de esperar al ciclo de 6 h.
+		// Refresca la politica ANTES de inventariar: si el admin acaba de cambiar
+		// algo que el inventario refleja (p. ej. las rutas de FIM) y pide un
+		// inventario inmediato, debe salir con la politica nueva, no la que el
+		// agente tuviera cargada. Sin esto, "guardar politica + actualizar
+		// inventario" seguidos devolvian datos con la politica vieja.
+		p.policyOnce(ctx)
 		p.inventarioOnce(ctx)
 		p.terminarTarea(ctx, t, 0, "inventario actualizado", nil)
 
