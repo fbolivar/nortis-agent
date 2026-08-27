@@ -59,6 +59,12 @@ func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	if v := consultarPS(ctx, scriptRuntime, 25*time.Second); v != nil {
 		hw["runtime"] = v
 	}
+	if v := consultarPS(ctx, scriptFIM, 20*time.Second); v != nil {
+		hw["fim"] = v
+	}
+	if v := consultarPS(ctx, scriptLan, 20*time.Second); v != nil {
+		hw["lan_hosts"] = v
+	}
 	return hw, recolectarSoftware()
 }
 
@@ -214,6 +220,16 @@ const scriptConfianza = `$tpm=try{$t=Get-Tpm -ErrorAction Stop;[pscustomobject]@
 const scriptRuntime = `$top=@(Get-Process -ErrorAction SilentlyContinue|Sort-Object WS -Descending|Select-Object -First 10 @{n='name';e={$_.ProcessName}},@{n='ram_mb';e={[int]($_.WS/1MB)}});` +
 	`$users=try{@(Get-Process -IncludeUserName -ErrorAction Stop|Where-Object{$_.UserName -and $_.UserName -notmatch 'NT AUTHORITY|NT-AUTORIDAD|Font Driver|Window Manager|DWM-|UMFD-'}|Select-Object -ExpandProperty UserName -Unique)}catch{$null};` +
 	`[pscustomobject]@{top_processes=$top;active_users=$users}|ConvertTo-Json -Compress -Depth 3`
+
+// Integridad de archivos (FIM): hash SHA256 de un conjunto de archivos criticos
+// que casi nunca cambian legitimamente. El servidor compara con el inventario
+// anterior; un cambio de hash es señal de manipulacion o malware.
+const scriptFIM = `@(@("$env:SystemRoot\System32\drivers\etc\hosts","$env:SystemRoot\System32\cmd.exe","$env:SystemRoot\explorer.exe")|ForEach-Object{if(Test-Path $_){[pscustomobject]@{path=$_;hash=(Get-FileHash -Algorithm SHA256 -Path $_ -ErrorAction SilentlyContinue).Hash}}})|Where-Object{$_.hash}|ConvertTo-Json -Compress -Depth 3`
+
+// Descubrimiento de red: vecinos de la subred local (IP + MAC) de la tabla de
+// vecinos. El servidor los cruza con los equipos con agente para revelar
+// dispositivos NO gestionados (shadow IT) en la red.
+const scriptLan = `@(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue|Where-Object{$_.State -in 'Reachable','Stale' -and $_.LinkLayerAddress -match '^[0-9A-Fa-f]{2}-'}|Select-Object -First 100 @{n='ip';e={$_.IPAddress}},@{n='mac';e={$_.LinkLayerAddress.ToLower().Replace('-',':')}})|ConvertTo-Json -Compress -Depth 3`
 
 // recolectarRed devuelve las interfaces de red activas (IP y MAC) y, si el equipo
 // esta en WiFi, el nombre de la red. Solo datos de red del propio equipo; nunca
