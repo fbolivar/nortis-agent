@@ -3,15 +3,15 @@
 package vault
 
 import (
-	"bufio"
 	"fmt"
 	"os"
-	"strings"
 
 	"golang.org/x/sys/windows"
 )
 
-// LeerPassword pide una contrasena por consola SIN eco (no se ve al teclear).
+// LeerPassword pide una contrasena por consola SIN eco (no se ve al teclear). Se
+// lee byte a byte desde stdin (sin bufer) para no consumir de mas: asi funciona
+// igual escribiendo en la consola que recibiendo la entrada por una tuberia.
 func LeerPassword(prompt string) (string, error) {
 	fmt.Print(prompt)
 	h := windows.Handle(os.Stdin.Fd())
@@ -20,7 +20,7 @@ func LeerPassword(prompt string) (string, error) {
 		_ = windows.SetConsoleMode(h, mode&^windows.ENABLE_ECHO_INPUT)
 		defer func() { _ = windows.SetConsoleMode(h, mode) }()
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	s, err := leerLineaCruda()
 	fmt.Println()
-	return strings.TrimRight(line, "\r\n"), err
+	return s, err
 }
