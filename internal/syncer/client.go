@@ -360,3 +360,12 @@ func (c *Client) SubirCaptura(ctx context.Context, req contract.ScreenshotReques
 	}
 	return c.post(ctx, "/api/agent/screenshot", c.endpointCredential(), req, &out)
 }
+
+// SubirEvidencia sube la copia sombra de un archivo copiado a USB (bajo
+// consentimiento). El contenido es CONTENIDO, gateado por consentimiento firmado.
+func (c *Client) SubirEvidencia(ctx context.Context, req contract.EvidenceRequest) error {
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	return c.post(ctx, "/api/agent/evidence", c.endpointCredential(), req, &out)
+}

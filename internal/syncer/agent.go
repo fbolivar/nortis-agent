@@ -391,3 +391,23 @@ func (a *Agent) SubirCaptura(ctx context.Context, png []byte) error {
 		ImageBase64: base64.StdEncoding.EncodeToString(png),
 	})
 }
+
+// SubirEvidencia sube la copia sombra de un archivo copiado a USB. `datos` nil o
+// vacio significa que el agente no encontro la copia (caducada o inexistente): la
+// consola lo marcara como no disponible.
+func (a *Agent) SubirEvidencia(ctx context.Context, evidenceID, originalPath string, datos []byte) error {
+	endpointID := a.EndpointID()
+	if endpointID == "" {
+		return nil
+	}
+	b64 := ""
+	if len(datos) > 0 {
+		b64 = base64.StdEncoding.EncodeToString(datos)
+	}
+	return a.client.SubirEvidencia(ctx, contract.EvidenceRequest{
+		EndpointID:    endpointID,
+		EvidenceID:    evidenceID,
+		OriginalPath:  originalPath,
+		ContentBase64: b64,
+	})
+}

@@ -309,6 +309,17 @@ type Policy struct {
 		Start   string `json:"start"`
 		End     string `json:"end"`
 	} `json:"work_hours"`
+
+	// Devices controla la instalacion de dispositivos por CLASE (camara, telefonos
+	// MTP, CD/DVD, lectores de tarjetas). El agente lo impone por la directiva de
+	// Windows "Device Installation Restrictions": una clase denegada no se instala,
+	// y las ya conectadas de esa clase se deshabilitan. Prevencion real, sin driver.
+	Devices struct {
+		BlockCamera     bool `json:"block_camera"`
+		BlockPortable   bool `json:"block_portable"`
+		BlockCdDvd      bool `json:"block_cd_dvd"`
+		BlockCardReader bool `json:"block_card_reader"`
+	} `json:"devices"`
 }
 
 type AppsMode string
@@ -457,4 +468,16 @@ type InventoryRequest struct {
 type ScreenshotRequest struct {
 	EndpointID  string `json:"endpoint_id"`
 	ImageBase64 string `json:"image_base64"`
+}
+
+// --- Recuperacion de copia sombra de evidencia (bajo consentimiento) ---
+
+// EvidenceRequest sube la copia sombra de un archivo copiado a un USB. Es
+// CONTENIDO, asi que este camino esta gateado por consentimiento firmado, igual
+// que las capturas. ContentBase64 vacio = el agente no encontro la copia.
+type EvidenceRequest struct {
+	EndpointID    string `json:"endpoint_id"`
+	EvidenceID    string `json:"evidence_id"`
+	OriginalPath  string `json:"original_path,omitempty"`
+	ContentBase64 string `json:"content_base64"`
 }

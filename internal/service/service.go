@@ -231,6 +231,8 @@ func (p *Program) comandosOnce(ctx context.Context) {
 			e = enforce.RestaurarCuarentena(dir, cmd.QuarantineID, cmd.OriginalPath)
 		case "delete_quarantine":
 			e = enforce.BorrarCuarentena(dir, cmd.QuarantineID)
+		case "upload_evidence":
+			e = p.subirEvidencia(ctx, cmd.QuarantineID, cmd.OriginalPath)
 		default:
 			e = fmt.Errorf("comando desconocido: %s", cmd.Kind)
 		}
@@ -616,6 +618,26 @@ func (p *Program) terminarTarea(ctx context.Context, t contract.Tarea, code int,
 func (p *Program) fallarTarea(ctx context.Context, t contract.Tarea, err error) {
 	p.log.Warn().Err(err).Str("task", t.ID).Str("kind", t.Kind).Msg("tarea fallida")
 	_ = p.agent.ReportarTarea(ctx, t.ID, "failed", nil, "", err.Error())
+}
+
+// subirEvidencia lee la copia sombra de un archivo copiado a USB y la sube bajo
+// consentimiento. Si no existe (caducada o nunca guardada) informa vacio para que
+// la consola lo marque como no disponible; nunca sale nada fuera de la carpeta de
+// evidencia (guarda contra path traversal).
+func (p *Program) subirEvidencia(ctx context.Context, evidenceID, originalPath string) error {
+	if evidenceID == "" || evidenceID != filepath.Base(evidenceID) ||
+		strings.ContainsAny(evidenceID, `/\`) || strings.Contains(evidenceID, "..") {
+		return fmt.Errorf("identificador de evidencia invalido: %q", evidenceID)
+	}
+	ruta := filepath.Join(agentcfg.Dir(), "evidencia", evidenceID)
+	datos, err := os.ReadFile(ruta)
+	if err != nil {
+		return p.agent.SubirEvidencia(ctx, evidenceID, originalPath, nil)
+	}
+	if len(datos) > 25*1024*1024 {
+		return fmt.Errorf("la copia sombra supera el limite de recuperacion (25 MB)")
+	}
+	return p.agent.SubirEvidencia(ctx, evidenceID, originalPath, datos)
 }
 
 // clasificacionOnce descarga las reglas de clasificacion por contenido y las
