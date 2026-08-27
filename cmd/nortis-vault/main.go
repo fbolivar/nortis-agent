@@ -11,7 +11,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strings"
@@ -22,8 +21,14 @@ import (
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
-		if err := interactivo(); err != nil {
+		// Modo interactivo (doble clic): al terminar se PAUSA para que la ventana
+		// no se cierre antes de que el usuario lea el resultado.
+		err := interactivo()
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "Error:", err)
+		}
+		_, _ = vault.LeerLinea("\nPresiona Enter para salir…")
+		if err != nil {
 			os.Exit(1)
 		}
 		return
@@ -97,31 +102,30 @@ func abrir(contenedor, destino string) error {
 }
 
 func interactivo() error {
-	r := bufio.NewReader(os.Stdin)
 	fmt.Println("Nortis Vault — cifrado portable de carpetas")
 	fmt.Println("  1) Cifrar una carpeta en un contenedor")
 	fmt.Println("  2) Abrir un contenedor")
-	fmt.Print("Elige (1/2): ")
-	op, _ := r.ReadString('\n')
+	op, _ := vault.LeerLinea("Elige (1/2): ")
 	switch strings.TrimSpace(op) {
 	case "1":
-		origen := pedir(r, "Carpeta a cifrar: ")
-		contenedor := pedir(r, "Archivo de salida (.nrtv): ")
+		origen := pedir("Carpeta a cifrar: ")
+		contenedor := pedir("Archivo de salida (.nrtv): ")
 		if !strings.HasSuffix(strings.ToLower(contenedor), ".nrtv") {
 			contenedor += ".nrtv"
 		}
 		return sellar(origen, contenedor)
 	case "2":
-		contenedor := pedir(r, "Contenedor (.nrtv): ")
-		destino := pedir(r, "Carpeta destino: ")
+		contenedor := pedir("Contenedor (.nrtv): ")
+		destino := pedir("Carpeta destino: ")
 		return abrir(contenedor, destino)
 	default:
 		return fmt.Errorf("opcion no valida")
 	}
 }
 
-func pedir(r *bufio.Reader, prompt string) string {
-	fmt.Print(prompt)
-	s, _ := r.ReadString('\n')
+// pedir lee una respuesta (no secreta) con el mismo lector sin bufer que el resto
+// del flujo, y limpia espacios y comillas que a veces deja arrastrar el copiado.
+func pedir(prompt string) string {
+	s, _ := vault.LeerLinea(prompt)
 	return strings.Trim(strings.TrimSpace(s), `"`)
 }
