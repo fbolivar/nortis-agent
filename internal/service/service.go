@@ -630,7 +630,7 @@ func (p *Program) subirEvidencia(ctx context.Context, evidenceID, originalPath s
 		return fmt.Errorf("identificador de evidencia invalido: %q", evidenceID)
 	}
 	ruta := filepath.Join(agentcfg.Dir(), "evidencia", evidenceID)
-	datos, err := os.ReadFile(ruta)
+	datos, err := os.ReadFile(ruta) // #nosec G304 -- ruta confinada a la carpeta de evidencia del agente; el id se valido contra path traversal arriba
 	if err != nil {
 		return p.agent.SubirEvidencia(ctx, evidenceID, originalPath, nil)
 	}
