@@ -110,6 +110,7 @@ func (a *Aplicador) Aplicar(p *contract.Policy) Resultado {
 
 	a.aplicarBloqueoSesion(p)
 	a.aplicarRed(p, estado)
+	a.aplicarDispositivos(p)
 
 	estado.Aplicado = true
 	if err := estado.Guardar(a.dir); err != nil {
@@ -227,6 +228,70 @@ func (a *Aplicador) aplicarBluetooth(bloquear bool, estado *Estado) {
 		_ = escribirDword(registry.LOCAL_MACHINE, claveBthserv, "Start", uint32(estado.BthservStart))
 		estado.BthservStart = -1
 	}
+}
+
+/* ----------------------------------------------- Dispositivos por clase --- */
+
+// Restriccion de instalacion de dispositivos por CLASE (Device Installation
+// Restrictions). El agente corre como SYSTEM, asi que puede escribir la directiva
+// que Windows aplica al conectar un dispositivo: si su clase esta en la lista de
+// denegadas, no se instala. Con DenyDeviceClassesRetroactive=1 tambien deshabilita
+// los ya conectados de esas clases. Es prevencion real de este canal, sin driver.
+const (
+	claveDenyClasses     = `SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions`
+	claveDenyClasesLista = claveDenyClasses + `\DenyDeviceClasses`
+	maxClasesGestionadas = 12
+)
+
+// GUID de clase de instalacion (SetupClass) por tipo de dispositivo.
+var guidsDispositivo = map[string]string{
+	"camera":     "{ca3e7ab9-b4c3-4ae6-8251-579ef933890f}", // Camaras
+	"imaging":    "{6bdd1fc6-810f-11d0-bec7-08002be2092f}", // Imagen (webcams/escaneres)
+	"portable":   "{eec5ad98-8080-425f-922a-dabf3de3f69a}", // WPD: telefonos MTP/PTP
+	"cddvd":      "{4d36e965-e325-11ce-bfc1-08002be10318}", // CD/DVD
+	"cardreader": "{50dd5230-ba8a-11d1-bf5d-0000f805f530}", // Lectores de tarjetas
+}
+
+// aplicarDispositivos escribe (o retira) la lista de clases denegadas segun la
+// politica. Gestiona SOLO los valores 1..maxClasesGestionadas: se limpian y se
+// reescriben cada vez, de modo que desmarcar una clase en la consola la reactiva.
+func (a *Aplicador) aplicarDispositivos(p *contract.Policy) {
+	var guids []string
+	if p.Devices.BlockCamera {
+		guids = append(guids, guidsDispositivo["camera"], guidsDispositivo["imaging"])
+	}
+	if p.Devices.BlockPortable {
+		guids = append(guids, guidsDispositivo["portable"])
+	}
+	if p.Devices.BlockCdDvd {
+		guids = append(guids, guidsDispositivo["cddvd"])
+	}
+	if p.Devices.BlockCardReader {
+		guids = append(guids, guidsDispositivo["cardreader"])
+	}
+
+	for i := 1; i <= maxClasesGestionadas; i++ {
+		_ = borrarValor(registry.LOCAL_MACHINE, claveDenyClasesLista, fmt.Sprint(i))
+	}
+
+	if len(guids) == 0 {
+		// Nada que bloquear: se apaga la directiva para no dejarla huerfana.
+		_ = escribirDword(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClasses", 0)
+		_ = borrarValor(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClassesRetroactive")
+		return
+	}
+
+	if err := escribirDword(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClasses", 1); err != nil {
+		a.log.Warn().Err(err).Msg("no se pudo activar la restriccion de dispositivos por clase")
+		return
+	}
+	_ = escribirDword(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClassesRetroactive", 1)
+	for i, g := range guids {
+		if err := escribirCadena(registry.LOCAL_MACHINE, claveDenyClasesLista, fmt.Sprint(i+1), g); err != nil {
+			a.log.Warn().Err(err).Str("clase", g).Msg("no se pudo denegar la clase de dispositivo")
+		}
+	}
+	a.log.Info().Int("clases", len(guids)).Msg("control de dispositivos por clase aplicado")
 }
 
 /* ----------------------------------------------------------------- USB --- */
@@ -466,6 +531,14 @@ func (a *Aplicador) Revertir() {
 	if estado.BthservStart >= 0 {
 		_ = escribirDword(registry.LOCAL_MACHINE, claveBthserv, "Start", uint32(estado.BthservStart))
 	}
+
+	// Dispositivos por clase: se retira la lista que gestionamos y se apaga la
+	// directiva, para que todas las clases vuelvan a instalarse con normalidad.
+	for i := 1; i <= maxClasesGestionadas; i++ {
+		_ = borrarValor(registry.LOCAL_MACHINE, claveDenyClasesLista, fmt.Sprint(i))
+	}
+	_ = borrarValor(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClasses")
+	_ = borrarValor(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClassesRetroactive")
 
 	a.vaciarCacheDNS()
 	_ = os.Remove(rutaEstado(a.dir))
