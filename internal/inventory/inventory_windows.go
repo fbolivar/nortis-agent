@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -28,7 +29,8 @@ import (
 )
 
 // Recolectar devuelve el hardware (mapa suelto) y la lista de software instalado.
-func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
+// fimPaths son las rutas a vigilar por integridad; vacio = lista fija por defecto.
+func Recolectar(ctx context.Context, fimPaths []string) (map[string]any, []contract.SoftwareItem) {
 	hw := recolectarHardware()
 	estadoCifrado(ctx, hw)
 	hw["network"] = recolectarRed(ctx)
@@ -59,7 +61,7 @@ func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	if v := consultarPS(ctx, scriptRuntime, 25*time.Second); v != nil {
 		hw["runtime"] = v
 	}
-	if v := consultarPS(ctx, scriptFIM, 20*time.Second); v != nil {
+	if v := consultarPS(ctx, buildScriptFIM(fimPaths), 20*time.Second); v != nil {
 		hw["fim"] = v
 	}
 	if v := consultarPS(ctx, scriptLan, 20*time.Second); v != nil {
@@ -224,7 +226,30 @@ const scriptRuntime = `$top=@(Get-Process -ErrorAction SilentlyContinue|Sort-Obj
 // Integridad de archivos (FIM): hash SHA256 de un conjunto de archivos criticos
 // que casi nunca cambian legitimamente. El servidor compara con el inventario
 // anterior; un cambio de hash es señal de manipulacion o malware.
-const scriptFIM = `@(@("$env:SystemRoot\System32\drivers\etc\hosts","$env:SystemRoot\System32\cmd.exe","$env:SystemRoot\explorer.exe")|ForEach-Object{if(Test-Path $_){[pscustomobject]@{path=$_;hash=(Get-FileHash -Algorithm SHA256 -Path $_ -ErrorAction SilentlyContinue).Hash}}})|Where-Object{$_.hash}|ConvertTo-Json -Compress -Depth 3`
+const scriptFIMDefault = `@(@("$env:SystemRoot\System32\drivers\etc\hosts","$env:SystemRoot\System32\cmd.exe","$env:SystemRoot\explorer.exe")|ForEach-Object{if(Test-Path $_){[pscustomobject]@{path=$_;hash=(Get-FileHash -Algorithm SHA256 -Path $_ -ErrorAction SilentlyContinue).Hash}}})|Where-Object{$_.hash}|ConvertTo-Json -Compress -Depth 3`
+
+// reFimPath acepta solo rutas absolutas de Windows (letra + ':\') sin caracteres
+// que permitirian romper o inyectar en el script de PowerShell: comillas,
+// backtick, $, separadores de comando o saltos de linea.
+var reFimPath = regexp.MustCompile(`^[A-Za-z]:\\[^"` + "`" + `$\r\n;|&<>]{1,240}$`)
+
+// buildScriptFIM construye el script FIM a partir de las rutas de la politica. Si
+// no hay rutas validas, cae a la lista fija por defecto. Cada ruta se valida
+// contra reFimPath antes de incrustarla, asi la politica no puede inyectar codigo.
+func buildScriptFIM(paths []string) string {
+	var quoted []string
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if reFimPath.MatchString(p) {
+			quoted = append(quoted, `"`+p+`"`)
+		}
+	}
+	if len(quoted) == 0 {
+		return scriptFIMDefault
+	}
+	return `@(@(` + strings.Join(quoted, ",") +
+		`)|ForEach-Object{if(Test-Path $_){[pscustomobject]@{path=$_;hash=(Get-FileHash -Algorithm SHA256 -Path $_ -ErrorAction SilentlyContinue).Hash}}})|Where-Object{$_.hash}|ConvertTo-Json -Compress -Depth 3`
+}
 
 // Descubrimiento de red: vecinos de la subred local (IP + MAC) de la tabla de
 // vecinos. El servidor los cruza con los equipos con agente para revelar
