@@ -111,6 +111,8 @@ func (a *Aplicador) Aplicar(p *contract.Policy) Resultado {
 	a.aplicarBloqueoSesion(p)
 	a.aplicarRed(p, estado)
 	a.aplicarDispositivos(p)
+	a.aplicarCuentas(p)
+	a.aplicarRDP(p)
 
 	estado.Aplicado = true
 	if err := estado.Guardar(a.dir); err != nil {
@@ -227,6 +229,53 @@ func (a *Aplicador) aplicarBluetooth(bloquear bool, estado *Estado) {
 	if estado.BthservStart >= 0 {
 		_ = escribirDword(registry.LOCAL_MACHINE, claveBthserv, "Start", uint32(estado.BthservStart))
 		estado.BthservStart = -1
+	}
+}
+
+/* --------------------------------------- Cuentas y sesiones remotas (RDP) --- */
+
+// Directiva de Terminal Services para limitar sesiones RDP.
+const claveTS = `SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services`
+
+// aplicarCuentas endurece la politica de contrasenas locales con `net accounts`.
+// Cada campo en 0 significa "no gestionar". Solo endurece: no se revierte al
+// desinstalar, porque bajar el minimo dejaria el equipo mas debil que antes.
+func (a *Aplicador) aplicarCuentas(p *contract.Policy) {
+	corre := func(args ...string) {
+		if err := exec.Command("net", append([]string{"accounts"}, args...)...).Run(); err != nil {
+			a.log.Warn().Err(err).Strs("args", args).Msg("no se pudo aplicar la politica de cuentas")
+		}
+	}
+	if p.Accounts.MinPasswordLength > 0 {
+		corre(fmt.Sprintf("/minpwlen:%d", p.Accounts.MinPasswordLength))
+	}
+	if p.Accounts.MaxPasswordAgeDays > 0 {
+		corre(fmt.Sprintf("/maxpwage:%d", p.Accounts.MaxPasswordAgeDays))
+	}
+	if p.Accounts.LockoutThreshold > 0 {
+		corre(fmt.Sprintf("/lockoutthreshold:%d", p.Accounts.LockoutThreshold))
+	}
+	if p.Accounts.MinPasswordLength > 0 || p.Accounts.MaxPasswordAgeDays > 0 || p.Accounts.LockoutThreshold > 0 {
+		a.log.Info().Msg("politica de contrasenas locales aplicada")
+	}
+}
+
+// aplicarRDP limita las sesiones RDP por inactividad y duracion. 0 = no gestionar
+// (se retira la clave). Se revierte al desinstalar.
+func (a *Aplicador) aplicarRDP(p *contract.Policy) {
+	if p.RemoteDesktop.MaxIdleMinutes > 0 {
+		_ = escribirDword(registry.LOCAL_MACHINE, claveTS, "MaxIdleTime", uint32(p.RemoteDesktop.MaxIdleMinutes)*60_000)
+	} else {
+		_ = borrarValor(registry.LOCAL_MACHINE, claveTS, "MaxIdleTime")
+	}
+	if p.RemoteDesktop.MaxSessionHours > 0 {
+		_ = escribirDword(registry.LOCAL_MACHINE, claveTS, "MaxConnectionTime", uint32(p.RemoteDesktop.MaxSessionHours)*3_600_000)
+	} else {
+		_ = borrarValor(registry.LOCAL_MACHINE, claveTS, "MaxConnectionTime")
+	}
+	if p.RemoteDesktop.MaxIdleMinutes > 0 || p.RemoteDesktop.MaxSessionHours > 0 {
+		a.log.Info().Int("idle_min", p.RemoteDesktop.MaxIdleMinutes).Int("max_h", p.RemoteDesktop.MaxSessionHours).
+			Msg("limites de sesion RDP aplicados")
 	}
 }
 
@@ -539,6 +588,12 @@ func (a *Aplicador) Revertir() {
 	}
 	_ = borrarValor(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClasses")
 	_ = borrarValor(registry.LOCAL_MACHINE, claveDenyClasses, "DenyDeviceClassesRetroactive")
+
+	// Limites de sesion RDP: se retiran. La politica de contrasenas (net accounts)
+	// NO se revierte a proposito: es endurecimiento y bajarlo dejaria el equipo mas
+	// debil de lo que estaba.
+	_ = borrarValor(registry.LOCAL_MACHINE, claveTS, "MaxIdleTime")
+	_ = borrarValor(registry.LOCAL_MACHINE, claveTS, "MaxConnectionTime")
 
 	a.vaciarCacheDNS()
 	_ = os.Remove(rutaEstado(a.dir))
