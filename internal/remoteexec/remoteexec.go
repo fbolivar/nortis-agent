@@ -454,6 +454,24 @@ func moverArchivo(src, dst string) error {
 	return nil
 }
 
+// --- evidence_snapshot: captura forense de un equipo en un clic ---
+
+// EvidenceSnapshotPayload solo lleva caducidad: el snapshot lo compone el agente
+// con lo que ya recolecta (procesos, puertos, autoarranque, cuentas, USB). Es una
+// foto CONGELADA para adjuntar a un incidente, distinta del inventario en vivo.
+type EvidenceSnapshotPayload struct {
+	NotAfter int64 `json:"not_after"`
+}
+
+// ParseEvidenceSnapshot lee el payload de una tarea evidence_snapshot.
+func ParseEvidenceSnapshot(payload string) (EvidenceSnapshotPayload, error) {
+	var p EvidenceSnapshotPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload evidence_snapshot ilegible: %w", err)
+	}
+	return p, nil
+}
+
 // --- ediscovery_scan: descubrimiento de datos en reposo ---
 
 // EDiscoveryPayload pide un barrido de rutas locales aplicando la clasificacion
