@@ -53,6 +53,10 @@ type FilesCollector struct {
 	// dirCuarentena es donde se retiran los archivos remediados.
 	dirCuarentena string
 
+	// dirEvidencia es donde se guarda la copia sombra de un archivo copiado a una
+	// unidad extraible (evidencia de fuga por USB, recuperable localmente).
+	dirEvidencia string
+
 	// clasificar etiqueta el archivo por su contenido (Fase B). Nulo si no hay
 	// clasificacion por contenido configurada (o sin consentimiento). Devuelve la
 	// etiqueta, nunca el contenido.
@@ -87,13 +91,14 @@ func (c *FilesCollector) UsarGraciaRestauro(fn func(ruta string) bool) {
 	c.recienRestaurado = fn
 }
 
-func NewFilesCollector(log zerolog.Logger, rutasExtra, allowed func() []string, dirCuarentena string) *FilesCollector {
+func NewFilesCollector(log zerolog.Logger, rutasExtra, allowed func() []string, dirCuarentena, dirEvidencia string) *FilesCollector {
 	return &FilesCollector{
 		log:           log.With().Str("recolector", "archivos").Logger(),
 		maquina:       nuevaMaquinaArchivos(),
 		rutasExtra:    rutasExtra,
 		allowed:       allowed,
 		dirCuarentena: dirCuarentena,
+		dirEvidencia:  dirEvidencia,
 	}
 }
 
@@ -455,6 +460,27 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 				if c.clasificar != nil && existe {
 					if etiqueta = c.clasificar(cambio.Ruta); etiqueta != "" {
 						ev.Payload["classification"] = etiqueta
+					}
+				}
+
+				// EVIDENCIA DE COPIA A USB (marca AccessPatrol / Endpoint Protector):
+				// si el documento se escribe en una unidad extraible, se registra su
+				// huella (sha256) y su tamaño, y se guarda una COPIA SOMBRA local para
+				// poder auditar despues QUE salio, no solo que hubo movimiento. Solo
+				// metadatos + hash viajan a la consola; el contenido nunca. Se calcula
+				// ANTES de la cuarentena, que moveria el archivo de sitio.
+				if cambio.Extraible && existe && enforce.EsDocumento(cambio.Ruta) {
+					ev.Payload["is_removable"] = true
+					if sum, err := enforce.HashArchivo(cambio.Ruta); err == nil {
+						ev.Payload["content_hash"] = sum
+					}
+					if c.dirEvidencia != "" {
+						if id, err := enforce.CopiaSombra(cambio.Ruta, c.dirEvidencia); err == nil && id != "" {
+							ev.Payload["evidence_id"] = id
+						} else if err != nil {
+							c.log.Debug().Err(err).Str("ruta", cambio.Ruta).
+								Msg("no se pudo guardar la copia sombra de evidencia")
+						}
 					}
 				}
 

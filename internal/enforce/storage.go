@@ -1,7 +1,10 @@
 package enforce
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,6 +103,76 @@ var extensionesSensibles = map[string]bool{
 	".pdf": true, ".csv": true, ".txt": true, ".rtf": true, ".odt": true, ".ods": true,
 	".zip": true, ".rar": true, ".7z": true, ".accdb": true, ".mdb": true, ".sql": true,
 	".dwg": true, ".pst": true, ".ost": true,
+}
+
+// EsDocumento indica si la ruta es un tipo de documento que interesa como
+// evidencia — la misma lista que acota la remediacion. Se expone para que el
+// colector decida si registrar la huella de un archivo copiado a un USB.
+func EsDocumento(ruta string) bool {
+	return extensionesSensibles[strings.ToLower(filepath.Ext(ruta))]
+}
+
+// MaxEvidenciaBytes acota el tamaño de una copia sombra. Un archivo mayor no se
+// copia (solo se registran su huella y su tamaño): guardar copias de archivos
+// enormes en cada equipo llenaria el disco. El hash y los metadatos bastan como
+// prueba; la copia es una comodidad para poder revisar el contenido despues.
+const MaxEvidenciaBytes = 100 * 1024 * 1024
+
+// HashArchivo calcula el SHA-256 del archivo completo, en hexadecimal. Es la
+// huella que identifica exactamente que salio a un USB sin revelar el contenido.
+func HashArchivo(ruta string) (string, error) {
+	f, err := os.Open(ruta)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// CopiaSombra guarda una copia del archivo en dirEvidencia para auditoria: la
+// "copia sombra" de un archivo transferido a un USB (la marca de AccessPatrol /
+// Endpoint Protector). Devuelve el id de la copia —su nombre dentro de la
+// carpeta— o "" si el archivo excede MaxEvidenciaBytes.
+//
+// El contenido NO sale del equipo: la copia vive en la maquina, como la
+// cuarentena, y solo podria subirse despues bajo peticion firmada y con
+// consentimiento de tratamiento. Mantiene la invariante del producto.
+func CopiaSombra(ruta, dirEvidencia string) (string, error) {
+	st, err := os.Stat(ruta)
+	if err != nil {
+		return "", err
+	}
+	if st.IsDir() || st.Size() > MaxEvidenciaBytes {
+		return "", nil
+	}
+	if err := os.MkdirAll(dirEvidencia, 0o700); err != nil {
+		return "", err
+	}
+	id := fmt.Sprintf("%d_%s", time.Now().UnixNano(), filepath.Base(ruta))
+	dest := filepath.Join(dirEvidencia, id)
+	in, err := os.Open(ruta)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(dest)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dest)
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dest)
+		return "", err
+	}
+	return id, nil
 }
 
 // fragmentosExcluidos son tramos de ruta que NUNCA se remedian, aunque queden
