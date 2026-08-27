@@ -38,6 +38,9 @@ func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	if acc := recolectarCuentas(ctx); acc != nil {
 		hw["accounts"] = acc
 	}
+	if upd := recolectarActualizaciones(ctx); upd != nil {
+		hw["updates"] = upd
+	}
 	return hw, recolectarSoftware()
 }
 
@@ -96,6 +99,36 @@ func recolectarCuentas(ctx context.Context) map[string]any {
 
 	out, err := exec.CommandContext(ctx2, "powershell.exe",
 		"-NoProfile", "-NonInteractive", "-Command", scriptCuentas).Output()
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(bytes.TrimSpace(out), &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// scriptActualizaciones consulta el estado de parches del equipo: cuantas
+// actualizaciones estan pendientes (COM Microsoft.Update.Session, la via estandar
+// sin modulos), sus titulos, la fecha del ultimo parche (Get-HotFix) y si el
+// Windows Update automatico esta configurado (registro AUOptions: 4 = automatico).
+// La busqueda de pendientes consulta a Windows Update y puede tardar, por eso el
+// colector corre con un timeout amplio y sale nulo si no responde.
+const scriptActualizaciones = `$p=try{$s=New-Object -ComObject Microsoft.Update.Session;$r=$s.CreateUpdateSearcher().Search("IsInstalled=0 and IsHidden=0 and Type='Software'");[pscustomobject]@{count=$r.Updates.Count;titles=@($r.Updates|Select-Object -First 15 -ExpandProperty Title)}}catch{$null};` +
+	`$hf=try{(Get-HotFix -ErrorAction Stop|Where-Object{$_.InstalledOn}|Sort-Object InstalledOn -Descending|Select-Object -First 1).InstalledOn.ToString('o')}catch{$null};` +
+	`$au=try{(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update' -ErrorAction Stop).AUOptions}catch{$null};` +
+	`[pscustomobject]@{pending=$p;last_hotfix=$hf;au_options=$au}|ConvertTo-Json -Compress -Depth 4`
+
+// recolectarActualizaciones devuelve el estado de parches como mapa suelto, o nil
+// si no se pudo consultar. Corre como SYSTEM. Timeout amplio: la busqueda de
+// actualizaciones pendientes contacta a Windows Update.
+func recolectarActualizaciones(ctx context.Context) map[string]any {
+	ctx2, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx2, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-Command", scriptActualizaciones).Output()
 	if err != nil {
 		return nil
 	}
