@@ -4,6 +4,7 @@ package collector
 
 import (
 	"context"
+	"os/exec"
 	"strings"
 	"time"
 	"unsafe"
@@ -38,6 +39,11 @@ type USBCollector struct {
 	// una copia seguiria expulsando —o dejando pasar— segun la lista blanca de
 	// hace tres horas.
 	politica func() *contract.Policy
+
+	// cifrado cachea el estado BitLocker por clave de dispositivo, para no lanzar
+	// una consulta de PowerShell en cada sondeo (cada 3 s) mientras la memoria
+	// sigue conectada. Se consulta una vez, al detectarla.
+	cifrado map[string]*bool
 }
 
 func NewUSBCollector(log zerolog.Logger, politica func() *contract.Policy) *USBCollector {
@@ -45,6 +51,7 @@ func NewUSBCollector(log zerolog.Logger, politica func() *contract.Policy) *USBC
 		log:      log.With().Str("recolector", "usb").Logger(),
 		maquina:  nuevaMaquinaUSB(),
 		politica: politica,
+		cifrado:  map[string]*bool{},
 	}
 }
 
@@ -103,6 +110,27 @@ func (c *USBCollector) cicloDeSondeo(emit Emit) {
 				Str("serial", v.SerialEfectivo()).
 				Str("etiqueta", v.Etiqueta).
 				Msg("dispositivo no autorizado expulsado")
+		}
+	}
+
+	// Estado de cifrado SOLO para dispositivos nuevos (los que aun no estan en
+	// `presentes`), cacheado por dispositivo para no consultar en cada sondeo.
+	for i := range vols {
+		k := vols[i].clave()
+		if c.maquina.presentes[k] {
+			continue
+		}
+		cif, ok := c.cifrado[k]
+		if !ok {
+			cif = cifradoBitLocker(vols[i].Letra)
+			c.cifrado[k] = cif
+		}
+		vols[i].Cifrado = cif
+	}
+	// Olvida el cache de los que ya no estan, para reconsultar al reconectar.
+	for k := range c.cifrado {
+		if !contieneClave(vols, k) {
+			delete(c.cifrado, k)
 		}
 	}
 
@@ -367,4 +395,43 @@ func serialDeDispositivo(letra string) string {
 	}
 
 	return strings.TrimSpace(string(buf[off:fin]))
+}
+
+// contieneClave indica si algun volumen del sondeo tiene la clave dada.
+func contieneClave(vols []volumen, k string) bool {
+	for _, v := range vols {
+		if v.clave() == k {
+			return true
+		}
+	}
+	return false
+}
+
+// cifradoBitLocker consulta si el volumen de la unidad `letra` (p. ej. "E:")
+// esta protegido con BitLocker. Devuelve nil si no se puede determinar (equipo
+// sin BitLocker, edicion Home, lector de tarjetas). ProtectionStatus: On/1 =
+// protegido; Off/0 = no.
+func cifradoBitLocker(letra string) *bool {
+	letra = strings.TrimSpace(letra)
+	if len(letra) < 2 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive",
+		"-Command", "(Get-BitLockerVolume -MountPoint '"+letra[:2]+"' -ErrorAction SilentlyContinue).ProtectionStatus").Output()
+	if err != nil {
+		return nil
+	}
+	s := strings.ToLower(strings.TrimSpace(string(out)))
+	switch s {
+	case "on", "1":
+		v := true
+		return &v
+	case "off", "0":
+		v := false
+		return &v
+	default:
+		return nil
+	}
 }
