@@ -41,6 +41,15 @@ func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	if upd := recolectarActualizaciones(ctx); upd != nil {
 		hw["updates"] = upd
 	}
+	if v := consultarPS(ctx, scriptPuertos, 20*time.Second); v != nil {
+		hw["listening_ports"] = v
+	}
+	if v := consultarPS(ctx, scriptShares, 20*time.Second); v != nil {
+		hw["shares"] = v
+	}
+	if v := consultarPS(ctx, scriptAutoruns, 20*time.Second); v != nil {
+		hw["autoruns"] = v
+	}
 	return hw, recolectarSoftware()
 }
 
@@ -138,6 +147,44 @@ func recolectarActualizaciones(ctx context.Context) map[string]any {
 	}
 	return m
 }
+
+// consultarPS corre un script de PowerShell que devuelve JSON y lo deserializa a
+// un valor generico (objeto o arreglo, segun lo que emita ConvertTo-Json).
+// Devuelve nil ante cualquier fallo o salida vacia. Se usa para los colectores de
+// auditoria cuya forma la decide el propio script.
+func consultarPS(ctx context.Context, script string, timeout time.Duration) any {
+	ctx2, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx2, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-Command", script).Output()
+	if err != nil {
+		return nil
+	}
+	t := bytes.TrimSpace(out)
+	if len(t) == 0 {
+		return nil
+	}
+	var v any
+	if json.Unmarshal(t, &v) != nil {
+		return nil
+	}
+	return v
+}
+
+// Puertos TCP a la escucha, con el proceso dueño: exposicion de red del equipo.
+// Se acota a 60 puertos unicos para no inflar el inventario.
+const scriptPuertos = `@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue|Sort-Object LocalPort -Unique|Select-Object -First 60|ForEach-Object{[pscustomobject]@{port=$_.LocalPort;address=$_.LocalAddress;process=(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName}})|ConvertTo-Json -Compress -Depth 3`
+
+// Recursos compartidos SMB que NO son administrativos (los que terminan en $:
+// C$, ADMIN$, IPC$). Un recurso compartido inesperado es un vector de fuga.
+const scriptShares = `@(Get-SmbShare -ErrorAction SilentlyContinue|Where-Object{$_.Name -notlike '*$'}|Select-Object Name,Path)|ConvertTo-Json -Compress -Depth 3`
+
+// Entradas de autoarranque en las claves Run del registro de maquina: deteccion
+// de persistencia (malware que se re-lanza en cada arranque).
+const scriptAutoruns = `$keys=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run');` +
+	`$o=foreach($k in $keys){if(Test-Path $k){$p=Get-ItemProperty $k;$p.PSObject.Properties|Where-Object{$_.Name -notmatch '^PS'}|ForEach-Object{[pscustomobject]@{name=$_.Name;command=[string]$_.Value;location=$k}}}};` +
+	`@($o)|ConvertTo-Json -Compress -Depth 3`
 
 // recolectarRed devuelve las interfaces de red activas (IP y MAC) y, si el equipo
 // esta en WiFi, el nombre de la red. Solo datos de red del propio equipo; nunca
