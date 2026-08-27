@@ -35,6 +35,9 @@ func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	if sec := posturaSeguridad(ctx); sec != nil {
 		hw["security"] = sec
 	}
+	if acc := recolectarCuentas(ctx); acc != nil {
+		hw["accounts"] = acc
+	}
 	return hw, recolectarSoftware()
 }
 
@@ -65,6 +68,34 @@ func posturaSeguridad(ctx context.Context) map[string]any {
 
 	out, err := exec.CommandContext(ctx2, "powershell.exe",
 		"-NoProfile", "-NonInteractive", "-Command", scriptPostura).Output()
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(bytes.TrimSpace(out), &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// scriptCuentas audita cuentas y accesos en una sola llamada: usuarios locales
+// (nombre, habilitado, ultimo inicio), los miembros del grupo Administradores
+// —resuelto por SID S-1-5-32-544 para que funcione en cualquier idioma de
+// Windows— y cuantos inicios de sesion FALLIDOS (evento 4625) hubo en 24 h. Todo
+// tolerante a fallo: un bloque que no se puede leer sale nulo, no rompe el resto.
+const scriptCuentas = `$u=try{Get-LocalUser -ErrorAction Stop|Select-Object Name,Enabled,@{n='LastLogon';e={if($_.LastLogon){$_.LastLogon.ToString('o')}else{$null}}}}catch{$null};` +
+	`$adm=try{$g=Get-LocalGroup -SID 'S-1-5-32-544' -ErrorAction Stop;@(Get-LocalGroupMember -Group $g.Name -ErrorAction Stop|Select-Object -ExpandProperty Name)}catch{$null};` +
+	`$fail=try{@(Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625;StartTime=(Get-Date).AddDays(-1)} -ErrorAction Stop).Count}catch{0};` +
+	`[pscustomobject]@{users=$u;admins=$adm;failed_logons_24h=$fail}|ConvertTo-Json -Compress -Depth 4`
+
+// recolectarCuentas devuelve la auditoria de cuentas como mapa suelto, o nil si
+// no se pudo consultar. Corre como SYSTEM (puede leer el registro de Seguridad).
+func recolectarCuentas(ctx context.Context) map[string]any {
+	ctx2, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx2, "powershell.exe",
+		"-NoProfile", "-NonInteractive", "-Command", scriptCuentas).Output()
 	if err != nil {
 		return nil
 	}
