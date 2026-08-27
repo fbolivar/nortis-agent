@@ -289,6 +289,11 @@ type Policy struct {
 	Apps struct {
 		Mode      AppsMode `json:"mode"`
 		Blocklist []string `json:"blocklist"`
+		// Allowlist es la lista blanca del modo 'allowlist': solo estos ejecutables
+		// se permiten. AllowlistEnforce decide si los demas se CIERRAN (true) o
+		// solo se alertan (false, modo seguro para probar).
+		Allowlist        []string `json:"allowlist"`
+		AllowlistEnforce bool     `json:"allowlist_enforce"`
 	} `json:"apps"`
 
 	// WorkHours restringe el uso del equipo a un horario. Fuera de la franja (en
@@ -305,9 +310,10 @@ type Policy struct {
 type AppsMode string
 
 const (
-	AppsAllow AppsMode = "allow"
-	AppsAlert AppsMode = "alert"
-	AppsBlock AppsMode = "block"
+	AppsAllow     AppsMode = "allow"
+	AppsAlert     AppsMode = "alert"
+	AppsBlock     AppsMode = "block"
+	AppsAllowlist AppsMode = "allowlist"
 )
 
 type ClassificationMode string

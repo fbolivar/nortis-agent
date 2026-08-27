@@ -43,6 +43,15 @@ func NewAppsCollector(log zerolog.Logger, politica func() *contract.Policy) *App
 
 // controlApp devuelve el modo de control para una app ("" si no se controla).
 // Nombre exacto del ejecutable, insensible a mayusculas.
+// protegidoDeAllowlist son ejecutables que el modo lista blanca NUNCA cierra,
+// aunque no esten en la lista: cerrarlos dejaria el equipo inutilizable. El resto
+// de procesos criticos del sistema ya se filtran en `enumerar` (esRuidoDelSistema
+// + solo sesiones interactivas), pero explorer.exe —el escritorio— si llega hasta
+// aqui y hay que blindarlo explicitamente.
+var protegidoDeAllowlist = map[string]bool{
+	"explorer.exe": true,
+}
+
 func (c *AppsCollector) controlApp(exe string) contract.AppsMode {
 	if c.politica == nil {
 		return ""
@@ -52,6 +61,24 @@ func (c *AppsCollector) controlApp(exe string) contract.AppsMode {
 		return ""
 	}
 	n := normalizar(exe)
+
+	// Modo lista blanca: se controla TODO lo que no este permitido.
+	if p.Apps.Mode == contract.AppsAllowlist {
+		if protegidoDeAllowlist[n] {
+			return ""
+		}
+		for _, a := range p.Apps.Allowlist {
+			if normalizar(a) == n {
+				return ""
+			}
+		}
+		if p.Apps.AllowlistEnforce {
+			return contract.AppsBlock
+		}
+		return contract.AppsAlert
+	}
+
+	// Modos alert/block: se controla lo que este en la lista negra.
 	for _, b := range p.Apps.Blocklist {
 		if normalizar(b) == n {
 			return p.Apps.Mode
