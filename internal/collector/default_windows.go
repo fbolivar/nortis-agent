@@ -58,6 +58,7 @@ func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta 
 		return p.Storage.AllowedPaths
 	}
 	dirCuarentena := filepath.Join(agentcfg.Dir(), "cuarentena")
+	dirEvidencia := filepath.Join(agentcfg.Dir(), "evidencia")
 
 	// cuarentenarClase decide, por la etiqueta de un archivo, si su clase esta
 	// vigilada con modo cuarentena en la politica vigente. Se lee de la politica
@@ -78,7 +79,7 @@ func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta 
 
 	// El colector de archivos ademas etiqueta por contenido (Fase B) cuando hay
 	// reglas cargadas; sin reglas, `clasificar` devuelve "" y no inspecciona nada.
-	archivos := NewFilesCollector(log, rutasPolitica, allowed, dirCuarentena)
+	archivos := NewFilesCollector(log, rutasPolitica, allowed, dirCuarentena, dirEvidencia)
 	if clasificar != nil {
 		archivos.UsarClasificador(clasificar)
 	}

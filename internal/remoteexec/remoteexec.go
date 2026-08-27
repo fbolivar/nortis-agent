@@ -454,6 +454,50 @@ func moverArchivo(src, dst string) error {
 	return nil
 }
 
+// --- ediscovery_scan: descubrimiento de datos en reposo ---
+
+// EDiscoveryPayload pide un barrido de rutas locales aplicando la clasificacion
+// por contenido, para saber DONDE vive el dato sensible sin esperar a que alguien
+// lo mueva (la funcion "eDiscovery" de Safetica / Endpoint Protector). Solo se
+// reportan metadatos: ruta, clase, tamaño y fecha; nunca el contenido.
+type EDiscoveryPayload struct {
+	Paths    []string `json:"paths"`
+	MaxFiles int      `json:"max_files"`
+	MaxHits  int      `json:"max_hits"`
+	NotAfter int64    `json:"not_after"`
+}
+
+// ParseEDiscovery valida el payload: al menos una ruta, todas absolutas y sin
+// "..". Fija topes por defecto para que un barrido nunca sea ilimitado.
+func ParseEDiscovery(payload string) (EDiscoveryPayload, error) {
+	var p EDiscoveryPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload ediscovery_scan ilegible: %w", err)
+	}
+	limpias := make([]string, 0, len(p.Paths))
+	for _, ruta := range p.Paths {
+		ruta = strings.TrimSpace(ruta)
+		if ruta == "" {
+			continue
+		}
+		if !filepath.IsAbs(ruta) || strings.Contains(ruta, "..") {
+			return p, fmt.Errorf("ruta invalida: %q", ruta)
+		}
+		limpias = append(limpias, ruta)
+	}
+	if len(limpias) == 0 {
+		return p, errors.New("no se indico ninguna ruta a barrer")
+	}
+	p.Paths = limpias
+	if p.MaxFiles <= 0 || p.MaxFiles > 200000 {
+		p.MaxFiles = 20000
+	}
+	if p.MaxHits <= 0 || p.MaxHits > 5000 {
+		p.MaxHits = 1000
+	}
+	return p, nil
+}
+
 // --- run_script: ejecutar un script firmado ---
 
 // RunScriptPayload es el contenido de una tarea run_script.

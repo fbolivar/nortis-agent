@@ -7,6 +7,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -191,6 +192,14 @@ func (p *Program) limpiarCuarentenaOnce(_ context.Context) {
 	if n > 0 {
 		p.log.Info().Int("borrados", n).Dur("retencion", enforce.RetencionCuarentena).
 			Msg("cuarentena purgada: evidencia caducada retirada")
+	}
+
+	// Las copias sombra de archivos copiados a USB caducan con la misma politica.
+	dirEv := filepath.Join(agentcfg.Dir(), "evidencia")
+	if m, err := enforce.PurgarCuarentena(dirEv, enforce.RetencionCuarentena, time.Now()); err != nil {
+		p.log.Warn().Err(err).Msg("no se pudo purgar la evidencia de USB")
+	} else if m > 0 {
+		p.log.Info().Int("borrados", m).Msg("evidencia de USB purgada: copias sombra caducadas retiradas")
 	}
 }
 
@@ -491,9 +500,106 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		code, out, err := remoteexec.EjecutarAislamiento(ctx, payload)
 		p.terminarTarea(ctx, t, code, out, err)
 
+	case "ediscovery_scan":
+		payload, err := remoteexec.ParseEDiscovery(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		out, err := p.ejecutarEDiscovery(ctx, payload)
+		p.terminarTarea(ctx, t, 0, out, err)
+
 	default:
 		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
 	}
+}
+
+// ejecutarEDiscovery barre las rutas pedidas aplicando la clasificacion por
+// contenido (el mismo motor RE2 que la Fase B) para descubrir DONDE vive el dato
+// sensible en reposo, sin esperar a que alguien lo mueva. Devuelve un JSON con
+// los hallazgos: solo metadatos (ruta, clase, tamaño, fecha), nunca el contenido.
+func (p *Program) ejecutarEDiscovery(ctx context.Context, pl remoteexec.EDiscoveryPayload) (string, error) {
+	type hallazgo struct {
+		Path     string `json:"path"`
+		Class    string `json:"class"`
+		Size     int64  `json:"size"`
+		Modified string `json:"modified"`
+	}
+	// Sin reglas cargadas no hay nada que inspeccionar: la consola solo entrega
+	// los patrones con consentimiento de tratamiento firmado.
+	if !p.clasificador.Activo() {
+		out, _ := json.Marshal(map[string]any{
+			"scanned": 0, "hits": 0, "truncated": false,
+			"note": "sin reglas de clasificacion por contenido; requiere consentimiento de tratamiento firmado",
+		})
+		return string(out), nil
+	}
+
+	inicio := time.Now()
+	var escaneados, revisados int
+	hallazgos := make([]hallazgo, 0, 64)
+	truncado := false
+
+	for _, raiz := range pl.Paths {
+		if truncado {
+			break
+		}
+		_ = filepath.WalkDir(raiz, func(ruta string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil // rutas inaccesibles: se saltan, no abortan el barrido
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if d.IsDir() {
+				// Se reutiliza la guarda de remediacion para no barrer Windows,
+				// AppData, temporales ni el propio Nortis.
+				if enforce.RutaRemediable(ruta) {
+					return nil
+				}
+				return filepath.SkipDir
+			}
+			escaneados++
+			if escaneados > pl.MaxFiles {
+				truncado = true
+				return filepath.SkipAll
+			}
+			if !enforce.EsDocumento(ruta) {
+				return nil
+			}
+			revisados++
+			clase := p.clasificador.ClasificarArchivo(ruta)
+			if clase == "" {
+				return nil
+			}
+			var size int64
+			var mod string
+			if info, e := d.Info(); e == nil {
+				size = info.Size()
+				mod = info.ModTime().UTC().Format(time.RFC3339)
+			}
+			hallazgos = append(hallazgos, hallazgo{Path: ruta, Class: clase, Size: size, Modified: mod})
+			if len(hallazgos) >= pl.MaxHits {
+				truncado = true
+				return filepath.SkipAll
+			}
+			return nil
+		})
+	}
+
+	out, _ := json.Marshal(map[string]any{
+		"scanned":    escaneados,
+		"inspected":  revisados,
+		"hits":       len(hallazgos),
+		"truncated":  truncado,
+		"elapsed_ms": time.Since(inicio).Milliseconds(),
+		"findings":   hallazgos,
+	})
+	return string(out), nil
 }
 
 // terminarTarea reporta el resultado de un ejecutor (exit code + salida o error).
