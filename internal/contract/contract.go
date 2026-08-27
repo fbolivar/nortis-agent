@@ -235,6 +235,12 @@ type Policy struct {
 		ConfidentialPaths []string `json:"confidential_paths"`
 	} `json:"encryption"`
 
+	// FIM: rutas de archivos a vigilar por integridad (hash). Vacio = el agente
+	// usa su lista fija de archivos criticos del sistema.
+	FIM struct {
+		Paths []string `json:"paths"`
+	} `json:"fim"`
+
 	// Monitoring solo llega activo si el tenant tiene consentimiento firmado: la
 	// consola recorta estos campos antes de enviarlos. El agente NO debe
 	// activarlos por su cuenta bajo ninguna circunstancia.
