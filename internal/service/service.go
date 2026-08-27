@@ -442,6 +442,12 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		code, out, err := remoteexec.EjecutarScan(ctx, payload)
 		p.terminarTarea(ctx, t, code, out, err)
 
+	case "refresh_inventory":
+		// No lleva payload ni ejecutor externo: solo fuerza un barrido de
+		// inventario inmediato en vez de esperar al ciclo de 6 h.
+		p.inventarioOnce(ctx)
+		p.terminarTarea(ctx, t, 0, "inventario actualizado", nil)
+
 	default:
 		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
 	}
