@@ -448,6 +448,45 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		p.inventarioOnce(ctx)
 		p.terminarTarea(ctx, t, 0, "inventario actualizado", nil)
 
+	case "account_action":
+		payload, err := remoteexec.ParseAccountAction(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarAccountAction(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "harden":
+		payload, err := remoteexec.ParseHarden(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarHarden(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
+	case "network_isolate":
+		payload, err := remoteexec.ParseIsolate(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarAislamiento(ctx, payload)
+		p.terminarTarea(ctx, t, code, out, err)
+
 	default:
 		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
 	}
