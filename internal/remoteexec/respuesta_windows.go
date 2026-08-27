@@ -114,52 +114,74 @@ func EjecutarHarden(ctx context.Context, p HardenPayload) (int, string, error) {
 	return 0, strings.Join(hechos, "; "), nil
 }
 
-// reglasAislamiento son las excepciones que se mantienen abiertas durante el
-// aislamiento. HTTPS de salida es la LINEA DE VIDA: mantiene al agente
-// reportando, asi el aislamiento se puede revertir desde la consola.
-var reglasAislamiento = []struct {
+// puertosLaterales son los puertos de movimiento lateral y exfiltracion interna
+// que el aislamiento corta HACIA y DESDE la red local. NO se toca la salida a
+// internet ni el gateway, asi la linea de vida del agente (HTTPS 443 al cloud)
+// queda intacta: es IMPOSIBLE perder el agente aislando.
+var puertosLaterales = []struct {
+	proto  string
+	puerto string
 	nombre string
-	args   []string
 }{
-	{"Nortis-Iso-DNS", []string{"dir=out", "action=allow", "protocol=UDP", "remoteport=53"}},
-	{"Nortis-Iso-HTTPS", []string{"dir=out", "action=allow", "protocol=TCP", "remoteport=443"}},
-	{"Nortis-Iso-RDP", []string{"dir=in", "action=allow", "protocol=TCP", "localport=3389"}},
+	{"TCP", "445", "SMB"},
+	{"TCP", "139", "NetBIOS-SSN"},
+	{"UDP", "137", "NetBIOS-NS"},
+	{"UDP", "138", "NetBIOS-DGM"},
+	{"TCP", "135", "RPC"},
+	{"TCP", "5985", "WinRM"},
+	{"TCP", "5986", "WinRM-S"},
 }
 
-// EjecutarAislamiento activa o revierte la cuarentena de red. Al activar: se
-// añaden las reglas de excepcion, se pone la politica por defecto en bloquear
-// entrada y salida y se enciende el firewall. Al revertir: se borran las reglas
-// y se restaura la politica por defecto de Windows (bloquear entrada, permitir
-// salida). NOTA: revertir deja el firewall ENCENDIDO (mas seguro que apagarlo a
-// ciegas); si el equipo lo tenia apagado, se indica para que el operador decida.
+// reglaIso genera el nombre unico de una regla de aislamiento por puerto/direccion.
+func reglaIso(nombre, dir string) string {
+	return "Nortis-Iso-" + nombre + "-" + dir
+}
+
+// EjecutarAislamiento activa o revierte la contencion de red. Al activar añade
+// reglas que BLOQUEAN los puertos de movimiento lateral (SMB, NetBIOS, RPC,
+// WinRM) hacia y desde la subred local (remoteip=LocalSubnet), y se asegura de
+// que el firewall este encendido para que apliquen. NO cambia la politica de
+// salida por defecto (queda en allowoutbound), asi el agente y el resto de la
+// salida a internet siguen funcionando. Al revertir borra esas reglas.
 func EjecutarAislamiento(ctx context.Context, p IsolatePayload) (int, string, error) {
 	ctx2, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
 	if p.Enable {
-		for _, r := range reglasAislamiento {
-			args := append([]string{"advfirewall", "firewall", "add", "rule", "name=" + r.nombre}, r.args...)
-			_, _, _ = correr(ctx2, "netsh", args...)
-		}
-		if code, o, err := correr(ctx2, "netsh", "advfirewall", "set", "allprofiles",
-			"firewallpolicy", "blockinbound,blockoutbound"); err != nil {
-			return code, o, fmt.Errorf("no se pudo fijar la politica de bloqueo: %w", err)
-		}
+		// Preservar RDP explicitamente por si el firewall pasa de apagado a
+		// encendido (evita cortar la sesion del administrador).
+		_, _, _ = correr(ctx2, "netsh", "advfirewall", "firewall", "add", "rule",
+			"name="+reglaIso("RDP", "in"), "dir=in", "action=allow", "protocol=TCP", "localport=3389")
+
+		// La salida por defecto se deja en allowoutbound: la linea de vida no se toca.
+		_, _, _ = correr(ctx2, "netsh", "advfirewall", "set", "allprofiles",
+			"firewallpolicy", "blockinbound,allowoutbound")
 		if code, o, err := correr(ctx2, "netsh", "advfirewall", "set", "allprofiles", "state", "on"); err != nil {
 			return code, o, err
 		}
-		return 0, "equipo aislado (solo DNS, HTTPS de salida y RDP quedan abiertos)", nil
+
+		for _, pl := range puertosLaterales {
+			for _, dir := range []string{"in", "out"} {
+				portArg := "localport=" + pl.puerto
+				if dir == "out" {
+					portArg = "remoteport=" + pl.puerto
+				}
+				_, _, _ = correr(ctx2, "netsh", "advfirewall", "firewall", "add", "rule",
+					"name="+reglaIso(pl.nombre, dir), "dir="+dir, "action=block",
+					"protocol="+pl.proto, portArg, "remoteip=LocalSubnet")
+			}
+		}
+		return 0, "equipo contenido: cortado el movimiento lateral en la LAN (SMB/NetBIOS/RPC/WinRM); internet, RDP y el agente siguen activos", nil
 	}
 
-	// Revertir.
-	for _, r := range reglasAislamiento {
-		_, _, _ = correr(ctx2, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+r.nombre)
+	// Revertir: borrar todas las reglas de aislamiento.
+	for _, pl := range puertosLaterales {
+		for _, dir := range []string{"in", "out"} {
+			_, _, _ = correr(ctx2, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+reglaIso(pl.nombre, dir))
+		}
 	}
-	if code, o, err := correr(ctx2, "netsh", "advfirewall", "set", "allprofiles",
-		"firewallpolicy", "blockinbound,allowoutbound"); err != nil {
-		return code, o, fmt.Errorf("no se pudo restaurar la politica: %w", err)
-	}
-	return 0, "aislamiento retirado; politica por defecto restaurada (firewall queda encendido)", nil
+	_, _, _ = correr(ctx2, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+reglaIso("RDP", "in"))
+	return 0, "contencion retirada; el equipo vuelve a comunicarse con la LAN", nil
 }
 
 // correr ejecuta un comando y devuelve exit code y salida combinada.
