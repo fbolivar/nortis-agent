@@ -210,6 +210,94 @@ func ParseScan(payload string) (ScanPayload, error) {
 	return p, nil
 }
 
+// --- account_action: respuesta sobre una cuenta local ---
+
+// AccountActionPayload pide una accion sobre una cuenta local. Action:
+// disable | enable | delete | logoff. Target: nombre de la cuenta/usuario.
+type AccountActionPayload struct {
+	Action   string `json:"action"`
+	Target   string `json:"target"`
+	NotAfter int64  `json:"not_after"`
+}
+
+// cuentasProtegidas nunca se borran ni deshabilitan, aunque la consola lo pida:
+// tumbar la cuenta integrada de administrador o al propio SYSTEM dejaria el
+// equipo sin salida. La consola es de confianza, pero un error humano no debe
+// poder inutilizar la maquina.
+var cuentasProtegidas = map[string]bool{
+	"administrator": true, "administrador": true, "system": true,
+	"defaultaccount": true, "wdagutilityaccount": true,
+}
+
+// ParseAccountAction valida la accion y el objetivo.
+func ParseAccountAction(payload string) (AccountActionPayload, error) {
+	var p AccountActionPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload account_action ilegible: %w", err)
+	}
+	switch p.Action {
+	case "disable", "enable", "delete", "logoff":
+	default:
+		return p, fmt.Errorf("accion de cuenta no soportada: %q", p.Action)
+	}
+	if strings.TrimSpace(p.Target) == "" {
+		return p, errors.New("falta la cuenta objetivo")
+	}
+	// El nombre puede venir como "EQUIPO\usuario"; se compara la parte final.
+	corto := p.Target
+	if i := strings.LastIndex(corto, `\`); i >= 0 {
+		corto = corto[i+1:]
+	}
+	if (p.Action == "delete" || p.Action == "disable") && cuentasProtegidas[strings.ToLower(corto)] {
+		return p, fmt.Errorf("la cuenta %q esta protegida y no se puede %s", corto, p.Action)
+	}
+	return p, nil
+}
+
+// --- harden: endurecimiento remoto (firewall, defender) ---
+
+// HardenPayload pide activar protecciones. Targets: "firewall", "defender".
+type HardenPayload struct {
+	Targets  []string `json:"targets"`
+	NotAfter int64    `json:"not_after"`
+}
+
+// ParseHarden valida los objetivos.
+func ParseHarden(payload string) (HardenPayload, error) {
+	var p HardenPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload harden ilegible: %w", err)
+	}
+	if len(p.Targets) == 0 {
+		return p, errors.New("no se indico que endurecer")
+	}
+	for _, t := range p.Targets {
+		if t != "firewall" && t != "defender" {
+			return p, fmt.Errorf("objetivo de endurecimiento no soportado: %q", t)
+		}
+	}
+	return p, nil
+}
+
+// --- network_isolate: aislamiento de red (cuarentena) ---
+
+// IsolatePayload activa o revierte el aislamiento. Al aislar se bloquea toda la
+// red SALVO: DNS, HTTPS de salida (para que el agente siga reportando y el
+// aislamiento sea reversible desde la consola) y RDP de entrada (gestion).
+type IsolatePayload struct {
+	Enable   bool  `json:"enable"`
+	NotAfter int64 `json:"not_after"`
+}
+
+// ParseIsolate lee el payload de aislamiento.
+func ParseIsolate(payload string) (IsolatePayload, error) {
+	var p IsolatePayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload network_isolate ilegible: %w", err)
+	}
+	return p, nil
+}
+
 // --- schedule_script: script recurrente ---
 
 // ScheduleScriptPayload define un script que el agente ejecuta cada
