@@ -118,6 +118,36 @@ func EsDocumento(ruta string) bool {
 // prueba; la copia es una comodidad para poder revisar el contenido despues.
 const MaxEvidenciaBytes = 100 * 1024 * 1024
 
+// EsperarLegible espera a que un archivo se pueda abrir y su tamaño se
+// estabilice, hasta `maxEspera`. Un archivo recien copiado a un USB esta
+// bloqueado por la copia en curso: abrirlo en ese instante para clasificar o
+// hashear falla con violacion de comparticion. Se sondea el tamaño; cuando no
+// cambia entre dos lecturas y el archivo abre, se considera listo. Devuelve
+// false si nunca llego a abrirse dentro del plazo.
+func EsperarLegible(ruta string, maxEspera time.Duration) bool {
+	deadline := time.Now().Add(maxEspera)
+	var ultimoTam int64 = -1
+	for {
+		abrio := false
+		if f, err := os.Open(ruta); err == nil {
+			abrio = true
+			st, e2 := f.Stat()
+			_ = f.Close()
+			if e2 == nil {
+				tam := st.Size()
+				if tam == ultimoTam {
+					return true // abrible y tamaño estable entre dos sondeos
+				}
+				ultimoTam = tam
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return abrio // ultimo intento: vale si al menos se pudo abrir
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
 // HashArchivo calcula el SHA-256 del archivo completo, en hexadecimal. Es la
 // huella que identifica exactamente que salio a un USB sin revelar el contenido.
 func HashArchivo(ruta string) (string, error) {

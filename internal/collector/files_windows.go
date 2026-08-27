@@ -452,6 +452,19 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 			if ev, recortado := c.maquina.observar(cambio, ahora); ev != nil {
 				existe := cambio.Operacion != archivoEliminado
 
+				// EVIDENCIA DE COPIA A USB (marca AccessPatrol / Endpoint Protector):
+				// un documento escrito en una unidad extraible se registra con su
+				// huella (sha256) y una COPIA SOMBRA local, para auditar QUE salio y
+				// no solo que hubo movimiento. La copia al USB aun tiene el archivo
+				// BLOQUEADO cuando salta el evento, asi que se espera a que sea
+				// legible y su tamaño se estabilice ANTES de clasificar, hashear y
+				// copiar; si no, todo eso falla con violacion de comparticion.
+				esEvidenciaUSB := cambio.Extraible && existe && enforce.EsDocumento(cambio.Ruta)
+				if esEvidenciaUSB {
+					ev.Payload["is_removable"] = true
+					enforce.EsperarLegible(cambio.Ruta, 8*time.Second)
+				}
+
 				// Clasificacion por contenido (Fase B): se calcula ANTES de decidir
 				// la cuarentena —una clase vigilada puede motivarla— y mientras el
 				// archivo sigue en su sitio (cuarentenar lo mueve). Solo lo que
@@ -463,16 +476,15 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 					}
 				}
 
-				// EVIDENCIA DE COPIA A USB (marca AccessPatrol / Endpoint Protector):
-				// si el documento se escribe en una unidad extraible, se registra su
-				// huella (sha256) y su tamaño, y se guarda una COPIA SOMBRA local para
-				// poder auditar despues QUE salio, no solo que hubo movimiento. Solo
-				// metadatos + hash viajan a la consola; el contenido nunca. Se calcula
-				// ANTES de la cuarentena, que moveria el archivo de sitio.
-				if cambio.Extraible && existe && enforce.EsDocumento(cambio.Ruta) {
-					ev.Payload["is_removable"] = true
+				// Huella + copia sombra, ya con el archivo estable. Solo metadatos +
+				// hash viajan a la consola; el contenido nunca. Todo antes de la
+				// cuarentena, que moveria el archivo de sitio.
+				if esEvidenciaUSB {
 					if sum, err := enforce.HashArchivo(cambio.Ruta); err == nil {
 						ev.Payload["content_hash"] = sum
+					} else {
+						c.log.Debug().Err(err).Str("ruta", cambio.Ruta).
+							Msg("no se pudo calcular la huella del archivo copiado a USB")
 					}
 					if c.dirEvidencia != "" {
 						if id, err := enforce.CopiaSombra(cambio.Ruta, c.dirEvidencia); err == nil && id != "" {
