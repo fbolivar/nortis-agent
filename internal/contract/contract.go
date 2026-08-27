@@ -213,6 +213,10 @@ type Policy struct {
 	USB struct {
 		Mode            USBMode  `json:"mode"`
 		SerialAllowlist []string `json:"serial_allowlist"`
+		// RequireEncryption: si esta activo, una memoria SIN BitLocker se expulsa
+		// (no hay solo-lectura por dispositivo en modo usuario; expulsar es la via
+		// decisiva). El estado de cifrado lo determina el recolector al montar.
+		RequireEncryption bool `json:"require_encryption"`
 	} `json:"usb"`
 
 	Web struct {

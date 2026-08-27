@@ -81,40 +81,11 @@ func (c *USBCollector) Run(ctx context.Context, emit Emit) {
 func (c *USBCollector) cicloDeSondeo(emit Emit) {
 	vols := c.sondear()
 	modo, listaBlanca := c.reglas()
+	exigeCifrado := c.exigeCifrado()
 
-	// LA EXPULSION VA ANTES DE EMITIR, y solo para dispositivos NUEVOS.
-	//
-	// El orden importa: si se emitiera primero, un dispositivo expulsado
-	// aparecería en el evento con enforcement "block" antes de que el bloqueo
-	// hubiera ocurrido de verdad, y si la expulsion fallara el panel diria que
-	// se bloqueo algo que sigue montado.
-	for _, v := range vols {
-		if !c.debeExpulsarse(v, modo, listaBlanca) {
-			continue
-		}
-		if c.maquina.presentes[v.clave()] {
-			// Ya se intento con este dispositivo. Reintentar cada tres segundos
-			// sobre un disco que no admite expulsion por software seria un bucle
-			// perpetuo contra el hardware del cliente.
-			continue
-		}
-
-		if err := Expulsar(v.Letra); err != nil {
-			c.log.Error().Err(err).
-				Str("unidad", v.Letra).
-				Str("serial", v.SerialEfectivo()).
-				Msg("dispositivo NO autorizado que no se pudo expulsar; el equipo esta expuesto en este canal")
-		} else {
-			c.log.Warn().
-				Str("unidad", v.Letra).
-				Str("serial", v.SerialEfectivo()).
-				Str("etiqueta", v.Etiqueta).
-				Msg("dispositivo no autorizado expulsado")
-		}
-	}
-
-	// Estado de cifrado SOLO para dispositivos nuevos (los que aun no estan en
-	// `presentes`), cacheado por dispositivo para no consultar en cada sondeo.
+	// Estado de cifrado ANTES de decidir expulsiones: se necesita para expulsar
+	// las memorias sin cifrar. Solo para dispositivos nuevos, cacheado por
+	// dispositivo para no consultar en cada sondeo.
 	for i := range vols {
 		k := vols[i].clave()
 		if c.maquina.presentes[k] {
@@ -127,10 +98,44 @@ func (c *USBCollector) cicloDeSondeo(emit Emit) {
 		}
 		vols[i].Cifrado = cif
 	}
-	// Olvida el cache de los que ya no estan, para reconsultar al reconectar.
 	for k := range c.cifrado {
 		if !contieneClave(vols, k) {
 			delete(c.cifrado, k)
+		}
+	}
+
+	// LA EXPULSION VA ANTES DE EMITIR, y solo para dispositivos NUEVOS. Se expulsa
+	// un dispositivo no autorizado (lista blanca) o, si la politica exige cifrado,
+	// uno que este SIN cifrar (Cifrado == false; nil = desconocido, no se expulsa).
+	for _, v := range vols {
+		sinCifrar := exigeCifrado && v.Cifrado != nil && !*v.Cifrado
+		if !c.debeExpulsarse(v, modo, listaBlanca) && !sinCifrar {
+			continue
+		}
+		if c.maquina.presentes[v.clave()] {
+			// Ya se intento con este dispositivo. Reintentar cada tres segundos
+			// sobre un disco que no admite expulsion por software seria un bucle
+			// perpetuo contra el hardware del cliente.
+			continue
+		}
+
+		motivo := "dispositivo no autorizado"
+		if sinCifrar {
+			motivo = "memoria sin cifrar (la politica exige cifrado)"
+		}
+		if err := Expulsar(v.Letra); err != nil {
+			c.log.Error().Err(err).
+				Str("unidad", v.Letra).
+				Str("serial", v.SerialEfectivo()).
+				Str("motivo", motivo).
+				Msg("dispositivo que no se pudo expulsar; el equipo esta expuesto en este canal")
+		} else {
+			c.log.Warn().
+				Str("unidad", v.Letra).
+				Str("serial", v.SerialEfectivo()).
+				Str("etiqueta", v.Etiqueta).
+				Str("motivo", motivo).
+				Msg("dispositivo expulsado")
 		}
 	}
 
@@ -171,6 +176,15 @@ func (c *USBCollector) reglas() (contract.USBMode, []string) {
 func (c *USBCollector) enforcement() string {
 	modo, _ := c.reglas()
 	return string(modo)
+}
+
+// exigeCifrado indica si la politica exige que las memorias esten cifradas.
+func (c *USBCollector) exigeCifrado() bool {
+	if c.politica == nil {
+		return false
+	}
+	p := c.politica()
+	return p != nil && p.USB.RequireEncryption
 }
 
 func stringDe(v any) string {
