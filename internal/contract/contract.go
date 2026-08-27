@@ -320,6 +320,23 @@ type Policy struct {
 		BlockCdDvd      bool `json:"block_cd_dvd"`
 		BlockCardReader bool `json:"block_card_reader"`
 	} `json:"devices"`
+
+	// Accounts endurece la politica de contrasenas locales via `net accounts`.
+	// 0 en cualquier campo = "no gestionar" (se deja como este el equipo). Se
+	// aplica pero NO se revierte al desinstalar: bajar el endurecimiento seria
+	// dejar el equipo mas debil que antes.
+	Accounts struct {
+		MinPasswordLength  int `json:"min_password_length"`
+		MaxPasswordAgeDays int `json:"max_password_age_days"`
+		LockoutThreshold   int `json:"lockout_threshold"`
+	} `json:"accounts"`
+
+	// RemoteDesktop limita las sesiones RDP por inactividad y por duracion, via la
+	// directiva de Terminal Services. 0 = no gestionar. Se revierte al desinstalar.
+	RemoteDesktop struct {
+		MaxIdleMinutes  int `json:"max_idle_minutes"`
+		MaxSessionHours int `json:"max_session_hours"`
+	} `json:"remote_desktop"`
 }
 
 type AppsMode string

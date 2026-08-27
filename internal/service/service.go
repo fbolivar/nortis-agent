@@ -541,6 +541,19 @@ func (p *Program) ejecutarTarea(ctx context.Context, t contract.Tarea) {
 		out, _ := json.Marshal(snap)
 		p.terminarTarea(ctx, t, 0, string(out), nil)
 
+	case "install_updates":
+		payload, err := remoteexec.ParseInstallUpdates(t.Payload)
+		if err != nil {
+			p.fallarTarea(ctx, t, err)
+			return
+		}
+		if remoteexec.Vencida(payload.NotAfter, time.Now()) {
+			p.fallarTarea(ctx, t, fmt.Errorf("tarea vencida antes de aplicarse"))
+			return
+		}
+		code, out, err := remoteexec.EjecutarInstallUpdates(ctx)
+		p.terminarTarea(ctx, t, code, out, err)
+
 	default:
 		p.fallarTarea(ctx, t, fmt.Errorf("accion no soportada en esta version: %s", t.Kind))
 	}

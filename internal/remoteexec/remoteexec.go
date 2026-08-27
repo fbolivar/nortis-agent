@@ -516,6 +516,41 @@ func ParseEDiscovery(payload string) (EDiscoveryPayload, error) {
 	return p, nil
 }
 
+// --- install_updates: instalar parches de Windows ---
+
+// InstallUpdatesPayload solo lleva caducidad. El script es fijo (no viene de la
+// consola): busca, descarga e instala las actualizaciones de software pendientes
+// con el API COM de Windows Update, que funciona headless como SYSTEM.
+type InstallUpdatesPayload struct {
+	NotAfter int64 `json:"not_after"`
+}
+
+// ParseInstallUpdates lee el payload de una tarea install_updates.
+func ParseInstallUpdates(payload string) (InstallUpdatesPayload, error) {
+	var p InstallUpdatesPayload
+	if err := json.Unmarshal([]byte(payload), &p); err != nil {
+		return p, fmt.Errorf("payload install_updates ilegible: %w", err)
+	}
+	return p, nil
+}
+
+const scriptInstallUpdates = `$ErrorActionPreference='Stop'
+$s = New-Object -ComObject Microsoft.Update.Session
+$sr = $s.CreateUpdateSearcher()
+$r = $sr.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
+if ($r.Updates.Count -eq 0) { Write-Output 'Sin actualizaciones pendientes'; exit 0 }
+$col = New-Object -ComObject Microsoft.Update.UpdateColl
+foreach ($u in $r.Updates) { if (-not $u.EulaAccepted) { $u.AcceptEula() }; [void]$col.Add($u) }
+$d = $s.CreateUpdateDownloader(); $d.Updates = $col; [void]$d.Download()
+$i = $s.CreateUpdateInstaller(); $i.Updates = $col; $res = $i.Install()
+Write-Output ("Instaladas {0} de {1}. Codigo de resultado {2}. Reinicio requerido: {3}" -f $col.Count, $r.Updates.Count, $res.ResultCode, $res.RebootRequired)`
+
+// EjecutarInstallUpdates aplica los parches pendientes reutilizando el ejecutor de
+// scripts (misma captura de salida y limites), con el script fijo de WUA.
+func EjecutarInstallUpdates(ctx context.Context) (int, string, error) {
+	return EjecutarRunScript(ctx, RunScriptPayload{Interpreter: "powershell", Script: scriptInstallUpdates})
+}
+
 // --- run_script: ejecutar un script firmado ---
 
 // RunScriptPayload es el contenido de una tarea run_script.
