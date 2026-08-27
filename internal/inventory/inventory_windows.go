@@ -50,6 +50,15 @@ func Recolectar(ctx context.Context) (map[string]any, []contract.SoftwareItem) {
 	if v := consultarPS(ctx, scriptAutoruns, 20*time.Second); v != nil {
 		hw["autoruns"] = v
 	}
+	if v := consultarPS(ctx, scriptUSB, 20*time.Second); v != nil {
+		hw["usb_history"] = v
+	}
+	if v := consultarPS(ctx, scriptConfianza, 30*time.Second); v != nil {
+		hw["trust"] = v
+	}
+	if v := consultarPS(ctx, scriptRuntime, 25*time.Second); v != nil {
+		hw["runtime"] = v
+	}
 	return hw, recolectarSoftware()
 }
 
@@ -183,8 +192,28 @@ const scriptShares = `@(Get-SmbShare -ErrorAction SilentlyContinue|Where-Object{
 // Entradas de autoarranque en las claves Run del registro de maquina: deteccion
 // de persistencia (malware que se re-lanza en cada arranque).
 const scriptAutoruns = `$keys=@('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run');` +
-	`$o=foreach($k in $keys){if(Test-Path $k){$p=Get-ItemProperty $k;$p.PSObject.Properties|Where-Object{$_.Name -notmatch '^PS'}|ForEach-Object{[pscustomobject]@{name=$_.Name;command=[string]$_.Value;location=$k}}}};` +
+	`$o=foreach($k in $keys){if(Test-Path $k){$p=Get-ItemProperty $k;$p.PSObject.Properties|Where-Object{$_.Name -notmatch '^PS' -and $_.Name -ne '(default)'}|ForEach-Object{[pscustomobject]@{name=$_.Name;command=[string]$_.Value;location=$k}}}};` +
 	`@($o)|ConvertTo-Json -Compress -Depth 3`
+
+// Historial de dispositivos USB de almacenamiento conectados alguna vez, leido de
+// USBSTOR. Las claves persisten para dispositivos ya desconectados: trazabilidad
+// para DLP (que memoria/disco se conecto a este equipo).
+const scriptUSB = `@(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Enum\USBSTOR' -ErrorAction SilentlyContinue|ForEach-Object{Get-ChildItem $_.PSPath -ErrorAction SilentlyContinue}|ForEach-Object{$p=Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue;[pscustomobject]@{name=$p.FriendlyName;id=$_.PSChildName}}|Where-Object{$_.name}|Select-Object -First 60)|ConvertTo-Json -Compress -Depth 3`
+
+// Confianza del equipo: TPM (presente/listo), Secure Boot (activo) y certificados
+// de la maquina proximos a caducar (60 dias). Cada bloque tolera fallo: equipos
+// sin TPM o con BIOS antiguo salen nulos.
+const scriptConfianza = `$tpm=try{$t=Get-Tpm -ErrorAction Stop;[pscustomobject]@{present=$t.TpmPresent;ready=$t.TpmReady}}catch{$null};` +
+	`$sb=try{[bool](Confirm-SecureBootUEFI -ErrorAction Stop)}catch{$null};` +
+	`$certs=try{@(Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop|Where-Object{$_.NotAfter -lt (Get-Date).AddDays(60)}|Select-Object -First 20 @{n='subject';e={$_.Subject}},@{n='not_after';e={$_.NotAfter.ToString('o')}})}catch{$null};` +
+	`[pscustomobject]@{tpm=$tpm;secure_boot=$sb;expiring_certs=$certs}|ConvertTo-Json -Compress -Depth 4`
+
+// Estado en vivo: usuarios con sesion iniciada ahora (incluye RDP) y los procesos
+// que mas memoria consumen. Get-Process -IncludeUserName exige privilegios; el
+// agente corre como SYSTEM.
+const scriptRuntime = `$top=@(Get-Process -ErrorAction SilentlyContinue|Sort-Object WS -Descending|Select-Object -First 10 @{n='name';e={$_.ProcessName}},@{n='ram_mb';e={[int]($_.WS/1MB)}});` +
+	`$users=try{@(Get-Process -IncludeUserName -ErrorAction Stop|Where-Object{$_.UserName -and $_.UserName -notmatch 'NT AUTHORITY|NT-AUTORIDAD|Font Driver|Window Manager|DWM-|UMFD-'}|Select-Object -ExpandProperty UserName -Unique)}catch{$null};` +
+	`[pscustomobject]@{top_processes=$top;active_users=$users}|ConvertTo-Json -Compress -Depth 3`
 
 // recolectarRed devuelve las interfaces de red activas (IP y MAC) y, si el equipo
 // esta en WiFi, el nombre de la red. Solo datos de red del propio equipo; nunca
