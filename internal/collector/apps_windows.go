@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -52,7 +53,25 @@ var protegidoDeAllowlist = map[string]bool{
 	"explorer.exe": true,
 }
 
-func (c *AppsCollector) controlApp(exe string) contract.AppsMode {
+// coincide indica si el identificador `id` de una lista (por .exe, por SHA-256 o
+// por editor firmante) casa con la app: su ejecutable, su hash o su editor.
+func coincide(id, exe, hash, editor string) bool {
+	n := normalizar(id)
+	if n == normalizar(exe) {
+		return true
+	}
+	if hash != "" && strings.EqualFold(id, hash) {
+		return true
+	}
+	if editor != "" && strings.EqualFold(strings.TrimSpace(id), strings.TrimSpace(editor)) {
+		return true
+	}
+	return false
+}
+
+// controlApp decide el modo de control de una app, pudiendo casar por nombre,
+// hash o editor, y aplicando "bloquear sin firmar". `firmada` nil = desconocido.
+func (c *AppsCollector) controlApp(exe, hash, editor string, firmada *bool) contract.AppsMode {
 	if c.politica == nil {
 		return ""
 	}
@@ -60,15 +79,14 @@ func (c *AppsCollector) controlApp(exe string) contract.AppsMode {
 	if p == nil || p.Apps.Mode == "" || p.Apps.Mode == contract.AppsAllow {
 		return ""
 	}
-	n := normalizar(exe)
 
 	// Modo lista blanca: se controla TODO lo que no este permitido.
 	if p.Apps.Mode == contract.AppsAllowlist {
-		if protegidoDeAllowlist[n] {
+		if protegidoDeAllowlist[normalizar(exe)] {
 			return ""
 		}
 		for _, a := range p.Apps.Allowlist {
-			if normalizar(a) == n {
+			if coincide(a, exe, hash, editor) {
 				return ""
 			}
 		}
@@ -78,11 +96,15 @@ func (c *AppsCollector) controlApp(exe string) contract.AppsMode {
 		return contract.AppsAlert
 	}
 
-	// Modos alert/block: se controla lo que este en la lista negra.
+	// Modos alert/block: se controla lo que este en la lista negra o, si se
+	// activo, lo que no tenga firma valida.
 	for _, b := range p.Apps.Blocklist {
-		if normalizar(b) == n {
+		if coincide(b, exe, hash, editor) {
 			return p.Apps.Mode
 		}
+	}
+	if p.Apps.BlockUnsigned && firmada != nil && !*firmada && !protegidoDeAllowlist[normalizar(exe)] {
+		return p.Apps.Mode
 	}
 	return ""
 }
@@ -149,7 +171,26 @@ func (c *AppsCollector) sondear(emit Emit) {
 
 	for i := range eventos {
 		app, _ := eventos[i].Payload["app"].(string)
-		modo := c.controlApp(app)
+
+		// Hash y firma SOLO para apps recien abiertas (las que traen la ruta): se
+		// calculan aqui, al emitir, no en el sondeo de siembra ni en cada ciclo.
+		var hash, editor string
+		var firmada *bool
+		if ruta, ok := eventos[i].Payload["executable_path"].(string); ok && ruta != "" {
+			hash = sha256Archivo(ruta)
+			editor, firmada = firmaAuthenticode(ruta)
+			if hash != "" {
+				eventos[i].Payload["sha256"] = hash
+			}
+			if editor != "" {
+				eventos[i].Payload["publisher"] = editor
+			}
+			if firmada != nil {
+				eventos[i].Payload["signed"] = *firmada
+			}
+		}
+
+		modo := c.controlApp(app, hash, editor, firmada)
 		if modo == "" {
 			continue
 		}
