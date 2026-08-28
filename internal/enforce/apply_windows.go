@@ -242,7 +242,9 @@ const claveTS = `SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services`
 // desinstalar, porque bajar el minimo dejaria el equipo mas debil que antes.
 func (a *Aplicador) aplicarCuentas(p *contract.Policy) {
 	corre := func(args ...string) {
-		if err := exec.Command("net", append([]string{"accounts"}, args...)...).Run(); err != nil {
+		// #nosec G204 -- args son banderas fijas de `net accounts` construidas a partir de enteros validados de la politica, no entrada de usuario
+		cmd := exec.Command("net", append([]string{"accounts"}, args...)...)
+		if err := cmd.Run(); err != nil {
 			a.log.Warn().Err(err).Strs("args", args).Msg("no se pudo aplicar la politica de cuentas")
 		}
 	}
