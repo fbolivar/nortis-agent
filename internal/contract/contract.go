@@ -217,6 +217,11 @@ type Policy struct {
 		// (no hay solo-lectura por dispositivo en modo usuario; expulsar es la via
 		// decisiva). El estado de cifrado lo determina el recolector al montar.
 		RequireEncryption bool `json:"require_encryption"`
+		// RequireContainer: si esta activo, un documento en claro escrito a una
+		// unidad extraible se RETIRA (a cuarentena) y se avisa al usuario de que use
+		// Nortis Vault. Solo se dejan pasar los contenedores cifrados (.nrtv). Es la
+		// version en modo usuario del "cifrado obligatorio de USB" (EasyLock-like).
+		RequireContainer bool `json:"require_container"`
 	} `json:"usb"`
 
 	Web struct {

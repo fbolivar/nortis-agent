@@ -72,6 +72,51 @@ type FilesCollector struct {
 	// Si lo esta, NO se re-cuarentena: el administrador decidio devolver el archivo
 	// y esa decision no puede deshacerse en el mismo instante. Nulo = sin gracia.
 	recienRestaurado func(ruta string) bool
+
+	// requireContainer indica si la politica exige que los documentos salgan al USB
+	// solo dentro de un contenedor cifrado. Nulo = no exigido.
+	requireContainer func() bool
+	// coach muestra un aviso educativo al usuario en su sesion. Nulo = sin coaching.
+	coach func(titulo, cuerpo string)
+	// Debounce del coaching: un solo aviso cada VentanaCoaching, para no inundar de
+	// popups al copiar varios archivos.
+	coachMu     sync.Mutex
+	ultimoCoach time.Time
+}
+
+// VentanaCoaching es el minimo entre dos avisos al usuario.
+const VentanaCoaching = 20 * time.Second
+
+// UsarCifradoObligatorioUSB conecta la exigencia de contenedor cifrado en USB.
+func (c *FilesCollector) UsarCifradoObligatorioUSB(fn func() bool) { c.requireContainer = fn }
+
+// UsarCoaching conecta el aviso educativo al usuario.
+func (c *FilesCollector) UsarCoaching(fn func(titulo, cuerpo string)) { c.coach = fn }
+
+// requiereContenedor consulta la politica, tolerando accesor nulo.
+func (c *FilesCollector) requiereContenedor() bool {
+	return c.requireContainer != nil && c.requireContainer()
+}
+
+// avisar muestra un aviso al usuario con debounce (VentanaCoaching).
+func (c *FilesCollector) avisar(titulo, cuerpo string) {
+	if c.coach == nil {
+		return
+	}
+	c.coachMu.Lock()
+	if time.Since(c.ultimoCoach) < VentanaCoaching {
+		c.coachMu.Unlock()
+		return
+	}
+	c.ultimoCoach = time.Now()
+	c.coachMu.Unlock()
+	c.coach(titulo, cuerpo)
+}
+
+// esContenedorCifrado indica si la ruta es un contenedor de Nortis Vault (.nrtv),
+// que ya viaja cifrado y por tanto puede salir al USB.
+func esContenedorCifrado(ruta string) bool {
+	return strings.EqualFold(filepath.Ext(ruta), ".nrtv")
 }
 
 // UsarClasificador conecta la clasificacion de contenido: el colector añadira la
@@ -504,18 +549,25 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 				porCarpeta := existe && enforce.DebeCuarentenar(cambio.Ruta, c.rutasPermitidas())
 				porClase := existe && etiqueta != "" && c.cuarentenarClase != nil &&
 					c.cuarentenarClase(etiqueta) && enforce.RutaRemediable(cambio.Ruta)
+				// USB con cifrado obligatorio: un documento EN CLARO en un extraible se
+				// retira; solo se dejan pasar los contenedores .nrtv (ya cifrados).
+				porContenedor := cambio.Extraible && existe && enforce.EsDocumento(cambio.Ruta) &&
+					c.requiereContenedor() && !esContenedorCifrado(cambio.Ruta)
 				// Gracia: si el archivo se acaba de restaurar desde la consola, no se
 				// re-cuarentena —seria deshacer al instante la decision del admin—.
 				enGracia := c.recienRestaurado != nil && c.recienRestaurado(cambio.Ruta)
 				c.log.Debug().
 					Str("ruta", cambio.Ruta).Str("clase", etiqueta).
 					Bool("por_carpeta", porCarpeta).Bool("por_clase", porClase).
-					Bool("gracia_restauro", enGracia).
+					Bool("por_contenedor", porContenedor).Bool("gracia_restauro", enGracia).
 					Msg("decision de cuarentena")
-				if (porCarpeta || porClase) && !enGracia {
+				if (porCarpeta || porClase || porContenedor) && !enGracia {
 					motivo := "fuera de carpeta permitida"
 					if porClase {
 						motivo = "clase de dato vigilada: " + etiqueta
+					}
+					if porContenedor {
+						motivo = "documento en claro a USB (cifrado obligatorio)"
 					}
 					if dest, err := enforce.Cuarentenar(cambio.Ruta, c.dirCuarentena); err == nil {
 						ev.Payload["enforcement"] = "quarantine"
@@ -524,6 +576,13 @@ func (c *FilesCollector) vigilar(ctx context.Context, raiz string, emit Emit) {
 						// mandar despues "restaura esto" o "borralo": identifica el
 						// archivo retirado sin revelar su contenido.
 						ev.Payload["quarantine_id"] = filepath.Base(dest)
+						// COACHING EN EL MOMENTO: si se retiro por cifrado obligatorio, se
+						// avisa al usuario que use Nortis Vault (no es castigo, es una guia
+						// para que pueda llevarse el dato ya cifrado).
+						if porContenedor {
+							c.avisar("Nortis: archivo protegido",
+								"Ese documento no puede salir en claro a un USB. Usa Nortis Vault para cifrarlo y llevarlo en un contenedor .nrtv.")
+						}
 						c.log.Warn().
 							Str("ruta", cambio.Ruta).Str("cuarentena", dest).Str("motivo", motivo).
 							Msg("documento retirado a cuarentena")
