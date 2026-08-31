@@ -115,7 +115,11 @@ func posturaSeguridad(ctx context.Context) map[string]any {
 const scriptCuentas = `$u=try{Get-LocalUser -ErrorAction Stop|Select-Object Name,Enabled,@{n='LastLogon';e={if($_.LastLogon){$_.LastLogon.ToString('o')}else{$null}}}}catch{$null};` +
 	`$adm=try{$g=Get-LocalGroup -SID 'S-1-5-32-544' -ErrorAction Stop;@(Get-LocalGroupMember -Group $g.Name -ErrorAction Stop|Select-Object -ExpandProperty Name)}catch{$null};` +
 	`$fail=try{@(Get-WinEvent -FilterHashtable @{LogName='Security';Id=4625;StartTime=(Get-Date).AddDays(-1)} -ErrorAction Stop).Count}catch{0};` +
-	`[pscustomobject]@{users=$u;admins=$adm;failed_logons_24h=$fail}|ConvertTo-Json -Compress -Depth 4`
+	// Politica de contrasenas EFECTIVA via secedit: sus claves (MinimumPasswordLength...) son en ingles e independientes del idioma de Windows, a diferencia del texto de `net accounts`.
+	`$pw=try{$t=[IO.Path]::GetTempFileName();secedit /export /cfg $t /areas SECURITYPOLICY|Out-Null;$ini=Get-Content $t;Remove-Item $t -EA SilentlyContinue;$g={param($k)([string]($ini|Select-String "^$k\s*=")) -replace '.*=\s*',''};[pscustomobject]@{min_length=[int](&$g 'MinimumPasswordLength');max_age=[int](&$g 'MaximumPasswordAge');lockout=[int](&$g 'LockoutBadCount')}}catch{$null};` +
+	// Limites de sesion RDP aplicados (directiva de Terminal Services), en milisegundos.
+	`$rdp=try{$k=Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services' -EA Stop;[pscustomobject]@{max_idle_ms=[int64]$k.MaxIdleTime;max_conn_ms=[int64]$k.MaxConnectionTime}}catch{$null};` +
+	`[pscustomobject]@{users=$u;admins=$adm;failed_logons_24h=$fail;password_policy=$pw;rdp=$rdp}|ConvertTo-Json -Compress -Depth 4`
 
 // recolectarCuentas devuelve la auditoria de cuentas como mapa suelto, o nil si
 // no se pudo consultar. Corre como SYSTEM (puede leer el registro de Seguridad).
