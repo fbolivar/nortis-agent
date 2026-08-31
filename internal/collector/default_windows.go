@@ -3,6 +3,7 @@
 package collector
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 
@@ -10,6 +11,7 @@ import (
 
 	"github.com/fbolivar/nortis-agent/internal/agentcfg"
 	"github.com/fbolivar/nortis-agent/internal/contract"
+	"github.com/fbolivar/nortis-agent/internal/remoteexec"
 )
 
 // PoliticaVigente da acceso a la politica que el agente tiene aplicada.
@@ -87,6 +89,15 @@ func Default(log zerolog.Logger, politica PoliticaVigente, clasificar func(ruta 
 	if recienRestaurado != nil {
 		archivos.UsarGraciaRestauro(recienRestaurado)
 	}
+	// Cifrado obligatorio de USB (A4) + coaching en el momento (A3): se leen de la
+	// politica en caliente; el aviso se muestra en la sesion del usuario.
+	archivos.UsarCifradoObligatorioUSB(func() bool {
+		p := politica()
+		return p != nil && p.USB.RequireContainer
+	})
+	archivos.UsarCoaching(func(titulo, cuerpo string) {
+		_ = remoteexec.MostrarAviso(context.Background(), titulo, cuerpo)
+	})
 
 	return []Collector{
 		NewSessionCollector(log),
